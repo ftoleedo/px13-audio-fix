@@ -41,7 +41,7 @@ blobs from the Windows driver**.
 ## Quick install
 
 ```bash
-git clone <this-repo> && cd px13-audio-fix
+git clone https://github.com/ftoleedo/px13-audio-fix.git && cd px13-audio-fix
 bash install-durable.sh        # asks for sudo when needed
 # reboot once if the module can't be live-reloaded
 ```
