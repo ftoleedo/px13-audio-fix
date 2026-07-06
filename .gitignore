@@ -1,0 +1,18 @@
+*.bak
+*.bak.*
+*.disabled
+/tmp/
+.DS_Store
+
+# kernel module build artifacts
+module/*.ko
+module/*.o
+module/*.mod
+module/*.mod.c
+module/.*.cmd
+module/modules.order
+module/Module.symvers
+module/.module-common.o
+
+# working material (not repo content)
+DRAFT-github-comment-737.md

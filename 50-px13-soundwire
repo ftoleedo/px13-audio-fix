@@ -1,0 +1,75 @@
+#!/bin/bash
+# systemd-sleep hook — ProArt PX13 (HN7306): recupera o audio SoundWire apos resume.
+#
+# Bug: o controlador AMD SoundWire (snd_pci_ps / amd_sdw_manager) NAO sobrevive ao
+# s2idle. Apos acordar, os codecs nao reinicializam e o barramento fica morto.
+# Pior: num wake instavel, um unbind seguido de bind que falha deixa o ACP SOLTO.
+#
+# Esta versao e DEFENSIVA:
+#   - faz ciclo unbind+bind com RETRY ate o card voltar (nunca deixa solto);
+#   - repete o ciclo ate os perifericos ficarem Attached (ate 3x);
+#   - so entao reinicia o pipewire da sessao do usuario p/ reconstruir o HiFi;
+#   - tem teto de tempo pra nao travar o resume.
+#
+# Instalar: /usr/lib/systemd/system-sleep/50-px13-soundwire (root:root 0755)
+# Rodar manual (recupera agora): sudo /usr/lib/systemd/system-sleep/50-px13-soundwire post suspend
+set -u
+PCI="0000:c4:00.5"
+DRV="/sys/bus/pci/drivers/snd_pci_ps"
+CARD="alsa_card.pci-0000_c4_00.5-platform-amd_sdw"
+SINK="alsa_output.pci-0000_c4_00.5-platform-amd_sdw.HiFi__Speaker__sink"
+LOG="/var/log/px13-soundwire-resume.log"
+log(){ echo "$(date '+%F %T' 2>/dev/null||echo now) $*" >> "$LOG" 2>/dev/null; }
+
+case "${1:-}" in post) : ;; *) exit 0 ;; esac
+log "post/${2:-?}: recuperando ACP SoundWire ($PCI)"
+[ -d "$DRV" ] || { log "ERRO: snd_pci_ps ausente"; exit 0; }
+
+is_bound(){ [ -e "/sys/bus/pci/devices/$PCI/driver" ]; }
+all_attached(){
+  local d ok=1 n=0
+  for d in /sys/bus/soundwire/devices/sdw:0:1:*; do
+    [ -e "$d/status" ] || continue; n=$((n+1))
+    [ "$(cat "$d/status" 2>/dev/null)" = "Attached" ] || ok=0
+  done
+  [ "$n" -ge 1 ] && [ "$ok" = "1" ]
+}
+status_str(){ local d s=""; for d in /sys/bus/soundwire/devices/sdw:0:1:*; do s="$s $(basename "$d"|cut -d: -f5)=$(cat "$d/status" 2>/dev/null)"; done; echo "$s"; }
+
+bind_with_retry(){            # garante que o driver fique BOUND (nunca solto)
+  local t
+  for t in 1 2 3 4 5 6; do
+    is_bound && return 0
+    echo "$PCI" > "$DRV/bind" 2>>"$LOG"
+    sleep 1
+  done
+  is_bound
+}
+
+# ciclo de recuperacao: unbind limpo -> bind -> espera Attached, repete ate 3x
+for cycle in 1 2 3; do
+  if is_bound; then echo "$PCI" > "$DRV/unbind" 2>>"$LOG"; sleep 1; fi
+  if ! bind_with_retry; then log "cycle $cycle: bind FALHOU"; sleep 1; continue; fi
+  for i in $(seq 1 24); do sleep 0.5; all_attached && break; done
+  log "cycle $cycle:$(status_str)"
+  all_attached && break
+done
+# rede de seguranca: jamais sair com o ACP solto
+is_bound || { bind_with_retry; log "safety bind: bound=$(is_bound && echo sim || echo NAO)"; }
+
+# reinicia o pipewire da sessao grafica p/ reconstruir o profile HiFi
+UNAME="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4 ~ /seat/ {print $3; exit}')"
+[ -z "${UNAME:-}" ] && UNAME="fbr"
+UID_="$(id -u "$UNAME" 2>/dev/null || echo 1000)"; RT="/run/user/$UID_"
+ru(){ runuser -u "$UNAME" -- env XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$RT/bus" "$@" 2>>"$LOG"; }
+if [ -S "$RT/bus" ]; then
+  ru systemctl --user restart wireplumber pipewire pipewire-pulse
+  sleep 3
+  ru pactl set-card-profile "$CARD" HiFi; sleep 1
+  ru pactl set-default-sink "$SINK"
+  ru pactl set-sink-mute "$SINK" 0
+  log "pipewire reiniciado ($UNAME uid $UID_) + HiFi/speaker reaplicado"
+else
+  log "AVISO: $RT/bus ausente — pipewire nao reiniciado"
+fi
+exit 0
