@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # Durable installer for the internal speakers of the ASUS ProArt PX13 (TAS2783).
-# For STOCK kernels >= 7.1 (upstream tas2783 driver). Run as a normal user;
-# it asks for sudo when it needs it.
+# For STOCK kernels >= 7.1 (upstream tas2783 driver).
 #
-#   bash install-durable.sh
+#   bash install-durable.sh          # asks for sudo when it needs it
+#   sudo bash install-durable.sh     # also fine - drops back to $SUDO_USER
+#                                    # for the PipeWire steps
 #
 # SKU-independent by design: the ALSA card index, the card long name, the ACP
 # PCI address and the PipeWire card name are all PROBED at install time. An
 # earlier version hardcoded them for a HN7306EAC and failed silently on every
 # other SKU (HN7306EA, HN7306EA-LX005X) - see lib/px13-detect.sh.
 #
-# Escape hatches (rarely needed): PX13_CARD, PX13_LONGNAME, PX13_DRIVER.
+# Escape hatches (rarely needed): PX13_CARD, PX13_LONGNAME, PX13_DRIVER,
+# PX13_USER (who owns the desktop session, when started as root).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,6 +26,17 @@ KREL="$(uname -r)"
 MARKER="px13-audio-fix"
 
 fail() { echo; echo "FAILED: $*" >&2; exit 1; }
+
+# System steps go through root_run (sudo, or straight through when already
+# root); session steps go through asuser (never as root).
+px13_init_privs || fail "started as root with no desktop session to fall back to.
+    'systemctl --user' does not exist for root, so the PipeWire half of this
+    installer cannot run. Either:
+      bash install-durable.sh                      (recommended - I sudo myself)
+      sudo PX13_USER=<youruser> bash install-durable.sh"
+root_run() { px13_root_run "$@"; }
+asuser()   { px13_asuser "$@"; }
+SESSION_OK=1; px13_session_ok || SESSION_OK=0
 
 echo "==> 0/8 Detecting the hardware (nothing below is hardcoded)"
 CARD="$(px13_find_card)" || fail "no SoundWire ALSA card found.
@@ -39,6 +52,8 @@ printf '    ALSA driver   : %s\n'   "$DRIVER"
 printf '    CardLongName  : %s\n'   "$LONG"
 printf '    components    : %s\n'   "${COMPONENTS:-(empty)}"
 printf '    UCM override  : %s\n'   "$UCM/conf.d/$DRIVER/$LONG.conf"
+[ -n "$PX13_SESSION_USER" ] && printf '    running as    : root (PipeWire steps as %s)\n' "$PX13_SESSION_USER"
+[ "$SESSION_OK" = 0 ] && printf '    WARNING       : no session bus at %s - userspace steps will be skipped\n' "$PX13_SESSION_RT/bus"
 
 px13_has_tas2783 "$CARD" || fail "no TAS2783 amplifier found on this machine.
     Neither a 'tas2783-*' mixer control nor a TI (0102) SoundWire peripheral is
@@ -48,32 +63,32 @@ px13_has_tas2783 "$CARD" || fail "no TAS2783 amplifier found on this machine.
     $UCM/conf.d/$DRIVER/$DRIVER.conf
     The override includes it. Install/upgrade alsa-ucm-conf (>= 1.2.13)."
 
-echo "==> 1/8 Kernel module with the 'Channel Playback' control (needs sudo)"
+echo "==> 1/8 Kernel module with the 'Channel Playback' control (needs root)"
 if command -v dkms >/dev/null 2>&1; then
   # drop an older manual install so it does not compete with the dkms one
-  sudo rm -f "/usr/lib/modules/$KREL/updates/snd-soc-tas2783-sdw.ko"
-  sudo mkdir -p "/usr/src/$DKMS_NAME-$DKMS_VER"
-  sudo cp -f "$REPO/module/tas2783-sdw.c" "$REPO/module/tas2783.h" \
-             "$REPO/module/Makefile" "$REPO/module/dkms.conf" \
-             "/usr/src/$DKMS_NAME-$DKMS_VER/"
-  sudo dkms install --force "$DKMS_NAME/$DKMS_VER" -k "$KREL"
+  root_run rm -f "/usr/lib/modules/$KREL/updates/snd-soc-tas2783-sdw.ko"
+  root_run mkdir -p "/usr/src/$DKMS_NAME-$DKMS_VER"
+  root_run cp -f "$REPO/module/tas2783-sdw.c" "$REPO/module/tas2783.h" \
+                 "$REPO/module/Makefile" "$REPO/module/dkms.conf" \
+                 "/usr/src/$DKMS_NAME-$DKMS_VER/"
+  root_run dkms install --force "$DKMS_NAME/$DKMS_VER" -k "$KREL"
   echo "    OK via DKMS (rebuilds itself on every kernel update)"
 else
   echo "    dkms not found - manual build (redo it after every kernel update!)"
   ( cd "$REPO/module" && make KVER="$KREL" LLVM=1 )
-  sudo install -Dm644 "$REPO/module/snd-soc-tas2783-sdw.ko" \
+  root_run install -Dm644 "$REPO/module/snd-soc-tas2783-sdw.ko" \
        "/usr/lib/modules/$KREL/updates/snd-soc-tas2783-sdw.ko"
-  sudo depmod -a "$KREL"
+  root_run depmod -a "$KREL"
 fi
 
-echo "==> 2/8 UCM blocks (needs sudo)"
+echo "==> 2/8 UCM blocks (needs root)"
 OVERRIDE="$UCM/conf.d/$DRIVER/$LONG.conf"
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 sed -e "s|@DRIVER@|$DRIVER|g" -e "s|@LONGNAME@|$LONG|g" \
     "$REPO/configs/ucm-card-override.conf.in" > "$TMP"
-sudo install -Dm644 "$REPO/configs/sof-soundwire_tas2783.conf" "$UCM/sof-soundwire/tas2783.conf"
-sudo install -Dm644 "$REPO/configs/codecs_tas2783_init.conf"   "$UCM/codecs/tas2783/init.conf"
-sudo install -Dm644 "$TMP" "$OVERRIDE"
+root_run install -Dm644 "$REPO/configs/sof-soundwire_tas2783.conf" "$UCM/sof-soundwire/tas2783.conf"
+root_run install -Dm644 "$REPO/configs/codecs_tas2783_init.conf"   "$UCM/codecs/tas2783/init.conf"
+root_run install -Dm644 "$TMP" "$OVERRIDE"
 echo "    OK (unowned override in conf.d/$DRIVER/ -> survives package updates)"
 
 # An override installed under a DIFFERENT long name (e.g. copied from a
@@ -83,24 +98,24 @@ for f in "$UCM/conf.d/$DRIVER"/*.conf; do
   [ -f "$f" ] || continue
   [ "$f" = "$OVERRIDE" ] && continue
   if grep -q "$MARKER" "$f" 2>/dev/null; then
-    sudo rm -f "$f"
+    root_run rm -f "$f"
     echo "    removed stale override for another SKU: $(basename "$f")"
   fi
 done
 
 # Detection helper + a cache of the values that are hard to probe once the
 # hardware has already fallen off the bus (used by the resume recovery).
-sudo install -Dm644 "$REPO/lib/px13-detect.sh" /usr/local/lib/px13-audio-detect.sh
+root_run install -Dm644 "$REPO/lib/px13-detect.sh" /usr/local/lib/px13-audio-detect.sh
 PCI="$(px13_acp_pci)" || PCI=""
 printf '# generated by px13-audio-fix on %s - do not edit by hand\nPX13_ACP_PCI=%s\nPX13_CARD_LONGNAME=%s\n' \
-  "$(date '+%F %T')" "$PCI" "$LONG" | sudo tee /etc/px13-audio-fix.conf >/dev/null
+  "$(date '+%F %T')" "$PCI" "$LONG" | root_run tee /etc/px13-audio-fix.conf >/dev/null
 echo "    cached: ACP PCI=${PCI:-?} -> /etc/px13-audio-fix.conf"
 
 echo "==> 3/8 Activating the fixed module"
 NEED_REBOOT=0
 if ! amixer -D "hw:$CARD" controls 2>/dev/null | grep -q 'Channel Playback'; then
-  systemctl --user stop wireplumber pipewire pipewire-pulse 2>/dev/null || true
-  if sudo modprobe -r snd_soc_tas2783_sdw 2>/dev/null && sudo modprobe snd_soc_tas2783_sdw; then
+  [ "$SESSION_OK" = 1 ] && asuser systemctl --user stop wireplumber pipewire pipewire-pulse 2>/dev/null || true
+  if root_run modprobe -r snd_soc_tas2783_sdw 2>/dev/null && root_run modprobe snd_soc_tas2783_sdw; then
     echo "    module reloaded live"
     sleep 2
   else
@@ -129,13 +144,22 @@ if ! echo "$UCM_DEVS" | grep -qw 'Speaker'; then
 fi
 echo "    OK - Speaker device present"
 
+if [ "$SESSION_OK" = 0 ]; then
+  echo "==> 5-8/8 SKIPPED: no desktop session bus reachable from here."
+  echo
+  echo "The system side is installed. Finish it from your own session with:"
+  echo "  systemctl --user restart wireplumber pipewire pipewire-pulse"
+  echo "  bash $REPO/install-durable.sh     # (re-run, it is idempotent)"
+  exit 0
+fi
+
 echo "==> 5/8 Restarting PipeWire and selecting the HiFi profile"
-systemctl --user restart wireplumber pipewire pipewire-pulse
+asuser systemctl --user restart wireplumber pipewire pipewire-pulse
 sleep 3
-PCARD="$(px13_pw_card)" || true
+PCARD="$(px13_pw_card_as asuser)" || true
 if [ -n "${PCARD:-}" ]; then
   echo "    PipeWire card: $PCARD"
-  pactl set-card-profile "$PCARD" HiFi 2>/dev/null || echo "    (profile switch failed - check 'pactl list cards')"
+  asuser pactl set-card-profile "$PCARD" HiFi 2>/dev/null || echo "    (profile switch failed - check 'pactl list cards')"
 else
   echo "    WARNING: no SoundWire card in PipeWire yet"
 fi
@@ -148,14 +172,15 @@ for n in $(seq 1 "${AMPS:-0}"); do
   amixer -D "hw:$CARD" cget name="tas2783-$n Channel Playback" 2>/dev/null | tail -1 | sed "s/^/    tas2783-$n:/"
 done
 [ "${AMPS:-0}" -lt 2 ] && echo "    note: only $AMPS amp(s) with controls - stereo assignment skipped"
-wpctl status | sed -n '/Sinks:/,/Sources:/p' | sed 's/^/    /'
-if SPK="$(px13_pw_speaker_sink)"; then
-  wpctl set-default "$(pactl list short sinks | awk -v s="$SPK" '$2 == s { print $1; exit }')" 2>/dev/null || true
+asuser wpctl status 2>/dev/null | sed -n '/Sinks:/,/Sources:/p' | sed 's/^/    /' || true
+if SPK="$(px13_pw_speaker_sink_as asuser)"; then
+  ID="$(asuser pactl list short sinks 2>/dev/null | awk -v s="$SPK" '$2 == s { print $1; exit }')" || ID=""
+  [ -n "$ID" ] && asuser wpctl set-default "$ID" 2>/dev/null || true
   echo "    default sink = $SPK"
 fi
 
 echo "==> 7/8 Persisting the ALSA state"
-sudo alsactl store || true
+root_run alsactl store || true
 
 echo "==> 8/8 Done"
 echo
@@ -163,7 +188,7 @@ if [ "$NEED_REBOOT" = 1 ]; then
   echo "REBOOT, then run: speaker-test -D pulse -c2 -l1 -t wav"
 else
   echo "SOUND TEST (stereo: 'Front Left' on the left, 'Front Right' on the right):"
-  speaker-test -D pulse -c2 -l1 -t wav 2>/dev/null | grep Front || true
+  asuser speaker-test -D pulse -c2 -l1 -t wav 2>/dev/null | grep Front || true
   echo
   echo "If the sides come out swapped, swap the two csets in"
   echo "  $UCM/sof-soundwire/tas2783.conf  (1 <-> 2)  and run:"

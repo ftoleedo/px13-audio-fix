@@ -21,9 +21,50 @@
 #   Every value is probed; every probe has an env override for the odd case.
 #
 # Usage:  source "$(dirname "$0")/lib/px13-detect.sh"
-# Overrides: PX13_CARD, PX13_LONGNAME, PX13_DRIVER, PX13_PCI, PX13_PW_CARD
+# Overrides: PX13_CARD, PX13_LONGNAME, PX13_DRIVER, PX13_PCI, PX13_PW_CARD,
+#            PX13_USER (session owner when the script is started as root)
 
 px13_die() { echo "ERRO: $*" >&2; return 1; }
+
+# --- privileges ------------------------------------------------------------
+# An installer here has to touch two worlds: system files (root) and the
+# desktop session's PipeWire (never root - `systemctl --user` as root fails
+# with "$DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined"). These
+# helpers make a script work BOTH ways: started as your normal user (it sudos
+# for the system parts) or started with sudo / as root (it drops back to the
+# session user for the userspace parts).
+PX13_SESSION_USER=""
+PX13_SESSION_RT=""
+
+# Returns 1 when running as root with no session user to fall back to.
+px13_init_privs() {
+	[ "$(id -u)" = 0 ] || return 0
+	PX13_SESSION_USER="${PX13_USER:-${SUDO_USER:-}}"
+	if [ -z "$PX13_SESSION_USER" ] || [ "$PX13_SESSION_USER" = root ]; then
+		PX13_SESSION_USER=""
+		return 1
+	fi
+	PX13_SESSION_RT="/run/user/$(id -u "$PX13_SESSION_USER" 2>/dev/null || echo 0)"
+	return 0
+}
+
+# Is there a usable session bus for the userspace steps?
+px13_session_ok() {
+	[ -n "$PX13_SESSION_USER" ] || return 0          # we ARE the session user
+	[ -S "$PX13_SESSION_RT/bus" ]
+}
+
+px13_root_run() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
+
+px13_asuser() {
+	if [ -z "$PX13_SESSION_USER" ]; then
+		"$@"
+	else
+		runuser -u "$PX13_SESSION_USER" -- \
+			env XDG_RUNTIME_DIR="$PX13_SESSION_RT" \
+			    DBUS_SESSION_BUS_ADDRESS="unix:path=$PX13_SESSION_RT/bus" "$@"
+	fi
+}
 
 # Values written by the installer while the hardware was still healthy. Used
 # ONLY as a last resort, because after a bad resume the card can be gone from

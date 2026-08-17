@@ -53,6 +53,12 @@ bash install-durable.sh        # asks for sudo when needed
 # reboot once if the module can't be live-reloaded
 ```
 
+`sudo bash install-durable.sh` works too: the installer needs root for the
+module and the UCM files but must **not** be root for the PipeWire half
+(`systemctl --user` does not exist for root), so when started under sudo it
+drops back to `$SUDO_USER` for those steps. If it cannot find a session to drop
+back to it says so instead of half-failing (`sudo PX13_USER=<you> bash ...`).
+
 The script:
 
 0. **Probes** the card index, the ALSA driver name and the `CardLongName`, and
@@ -246,6 +252,10 @@ If the sides are physically swapped, exchange the two `cset` values in
   reconnect it to rediscover A2DP.
 - **Audio jumps to Bluetooth after profile switch** — set the default sink
   once: `wpctl set-default <id of Audio Coprocessor Speaker>`.
+- **`Failed to connect to user scope bus ... $DBUS_SESSION_BUS_ADDRESS and
+  $XDG_RUNTIME_DIR not defined`** — you are on a version older than `2b9c0d5`
+  and ran the installer entirely as root. Pull and re-run; the system half is
+  already installed, the script is idempotent.
 
 ---
 
