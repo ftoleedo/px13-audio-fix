@@ -129,9 +129,11 @@ px13_sdw_status_str() {
 }
 
 # Is a TI amp on the bus? Works before the codec driver is even loaded.
+# Always "amixer -D hw:N", never "-c N": the plain -c view goes through the UCM
+# ctl remap, which renames/hides controls (see codecs/tas2783/init.conf).
 px13_has_tas2783() {
 	local card="${1:-}" d
-	[ -n "$card" ] && amixer -c "$card" controls 2>/dev/null | grep -q 'tas2783' && return 0
+	[ -n "$card" ] && amixer -D "hw:$card" controls 2>/dev/null | grep -q 'tas2783' && return 0
 	for d in /sys/bus/soundwire/devices/sdw:*:0102:*; do
 		[ -e "$d" ] && return 0
 	done
@@ -140,7 +142,7 @@ px13_has_tas2783() {
 
 # How many amps expose controls (1, 2, ...). 0 = driver not loaded yet.
 px13_amp_count() {
-	amixer -c "$1" controls 2>/dev/null \
+	amixer -D "hw:$1" controls 2>/dev/null \
 		| sed -n "s/.*name='tas2783-\([0-9]\+\) .*/\1/p" | sort -un | wc -l
 }
 
