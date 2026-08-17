@@ -253,7 +253,7 @@ If the sides are physically swapped, exchange the two `cset` values in
 - **Audio jumps to Bluetooth after profile switch** — set the default sink
   once: `wpctl set-default <id of Audio Coprocessor Speaker>`.
 - **`Failed to connect to user scope bus ... $DBUS_SESSION_BUS_ADDRESS and
-  $XDG_RUNTIME_DIR not defined`** — you are on a version older than `2b9c0d5`
+  $XDG_RUNTIME_DIR not defined`** — you are on a version older than `ff53876`
   and ran the installer entirely as root. Pull and re-run; the system half is
   already installed, the script is idempotent.
 
