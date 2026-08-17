@@ -1,0 +1,50 @@
+Syntax 8
+
+# px13-audio-fix — UCM card override (TEMPLATE, do not install verbatim).
+#
+# install-durable.sh substitutes @DRIVER@ / @LONGNAME@ with values probed from
+# the running machine and installs the result as
+#
+#     /usr/share/alsa/ucm2/conf.d/@DRIVER@/@LONGNAME@.conf
+#
+# THE PROBLEM
+#   Mainline kernels >= 7.1 carry the upstream snd-soc-tas2783-sdw driver, but
+#   the machine driver announces the card with components
+#   "cfg-amp:2 ... hs:rt721" and NO "spk:tas2783" tag. Without that tag the
+#   stock amd-soundwire.conf leaves SpeakerCodecFile empty, the HiFi profile
+#   exposes no Speaker device, and PipeWire falls back to a dummy sink: no
+#   sound from the internal speakers at all.
+#
+# WHY THE FILENAME IS NOT A CONSTANT
+#   ucm.conf probes conf.d/${CardDriver}/${CardLongName}.conf FIRST and only
+#   falls back to conf.d/${CardDriver}/${CardDriver}.conf (the package-owned
+#   file). ${CardLongName} is built from DMI, so it differs per SKU:
+#
+#     ASUSTeKCOMPUTERINC.-ProArtPX13HN7306EAC-1.0-HN7306EAC   (128 GB, GOPRO)
+#     ASUSTeKCOMPUTERINC.-ProArtPX13HN7306EA-1.0-HN7306EA     (64 GB / LX005X)
+#
+#   A file installed under the wrong name is never read and the failure is
+#   completely silent. That is why this is a template and the installer probes
+#   the name instead of hardcoding one.
+#
+# WHY IT SURVIVES UPDATES
+#   No package owns this path, so pacman/dnf never removes it on alsa-ucm-conf,
+#   sof-firmware or kernel updates. It INCLUDES the stock config (so it tracks
+#   upstream changes) and only forces the speaker codec.
+#
+# Validate with:  alsaucm -c <card> list _devices/HiFi   -> must list "Speaker"
+
+Include.base.File "/conf.d/@DRIVER@/@DRIVER@.conf"
+
+# Force the speaker codec. It has to be If.codec_default.Append.Define (the same
+# structure the base config uses); a plain top-level Define after the include
+# has NO effect - it is evaluated before the base's own defaults. Tested.
+If.codec_default.Append.Define {
+	SpeakerCodec1 "tas2783"
+	SpeakerCodecFile "tas2783"
+}
+
+# Pull in the codec init (defines SpeakerMixerElem and the stereo remap of the
+# two amps). The If.spk regex in the base config does not list tas2783, so the
+# include has to be explicit here.
+Include.tas2783init.File "/codecs/tas2783/init.conf"

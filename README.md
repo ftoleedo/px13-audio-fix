@@ -1,11 +1,18 @@
-# TAS2783 speakers on the ASUS ProArt PX13 (HN7306EA) under Linux
+# TAS2783 speakers on the ASUS ProArt PX13 (HN7306) under Linux
 
-Working **stereo** on the internal speakers of the ASUS ProArt PX13 (HN7306EA,
+Working **stereo** on the internal speakers of the ASUS ProArt PX13 (HN7306*,
 AMD Strix Halo) — on a **stock kernel ≥ 7.1**, surviving kernel and
 alsa-ucm-conf updates.
 
-Tested on CachyOS `linux-cachyos 7.1.3-1`. Should work on Arch, Fedora and
-other distros with minor path adjustments.
+**Every SKU.** Nothing is hardcoded to one machine: the ALSA card index, the
+card long name, the ACP PCI address and the PipeWire node names are all probed
+at install time (`lib/px13-detect.sh`), and the installer now **fails loudly**
+instead of exiting 0 without sound. See
+[SKU independence](#sku-independence-why-it-used-to-break-on-other-px13s).
+
+Tested on CachyOS `linux-cachyos 7.1.3-1` (HN7306EAC) and reported working on
+HN7306EA / HN7306EA-LX005X. Should work on Arch, Fedora and other distros with
+minor path adjustments.
 
 > **On kernels < 7.1** the tas2783 driver in mainline was not usable and the
 > fix was a patched kernel (nealstar's 16-patch series, packaged for CachyOS
@@ -48,20 +55,71 @@ bash install-durable.sh        # asks for sudo when needed
 
 The script:
 
+0. **Probes** the card index, the ALSA driver name and the `CardLongName`, and
+   aborts with a diagnostic if there is no SoundWire card or no TAS2783 amp.
 1. Installs the patched `snd-soc-tas2783-sdw` module via **DKMS**
    (auto-rebuilds on every kernel update) — falls back to a manual build
    into `/lib/modules/$(uname -r)/updates/` if dkms is not installed.
-2. Installs the three UCM files (see below).
-3. Restarts PipeWire, selects the HiFi profile, checks the SoundWire
+2. Installs the three UCM files under the long name **of your machine**, and
+   removes any override this repo previously installed under a different SKU
+   name (dead weight — UCM never reads it).
+3. **Verifies** that UCM now exposes a `Speaker` device and exits non-zero with
+   diagnostics if it does not. No more silent success.
+4. Restarts PipeWire, selects the HiFi profile, checks the SoundWire
    peripherals, saves the ALSA state.
 
-The resume recovery is separate (it is host-specific — PCI address and module
-list mapped on this machine, kernel 7.1.5):
+The suspend/resume recovery is a separate, optional step:
 
 ```bash
-sudo install -m755 50-px13-soundwire /usr/lib/systemd/system-sleep/
-sudo install -m755 px13-soundwire-recover.sh /usr/local/lib/
+bash install-resume-recovery.sh        # hook + recovery script + dry run
 ```
+
+---
+
+## SKU independence (why it used to break on other PX13s)
+
+The first version of this repo hardcoded four machine-specific values. Three of
+them were cosmetic; one silently broke every laptop that was not the machine it
+was written on:
+
+| Hardcoded | Actually varies with | Symptom when wrong |
+|---|---|---|
+| `LONG=ASUSTeKCOMPUTERINC.-ProArtPX13HN7306EAC-1.0-HN7306EAC` | **the SKU** (DMI product name) | **silent total failure** |
+| `CARD=1` | boot order / other sound cards | wrong card poked |
+| `alsa_card.pci-0000_c4_00.5-platform-amd_sdw` | ACP PCI address | profile switch fails |
+| `PCI=0000:c4:00.5` | ACP PCI address | resume recovery does nothing |
+
+The first one is fatal because of how ALSA UCM resolves configs
+(`/usr/share/alsa/ucm2/ucm.conf`):
+
+```
+conf.d/${CardDriver}/${CardLongName}.conf     <- probed first
+conf.d/${CardDriver}/${CardDriver}.conf       <- package-owned fallback
+```
+
+`CardLongName` is built from DMI, so it differs per SKU:
+
+```
+ASUSTeKCOMPUTERINC.-ProArtPX13HN7306EAC-1.0-HN7306EAC    128 GB / GOPRO
+ASUSTeKCOMPUTERINC.-ProArtPX13HN7306EA-1.0-HN7306EA      64 GB, LX005X, ...
+```
+
+An override installed under the wrong name is **never read**. UCM falls back to
+the stock config, the HiFi profile has no Speaker device, PipeWire shows a
+dummy sink — and the old installer still printed its steps and exited 0.
+
+Check yours with:
+
+```bash
+amixer -c "$(cat /proc/asound/cards | grep -i soundwire | awk '{print $1}')" info
+#   Card sysdefault:1 'amdsoundwire'/'<-- this string is the long name -->'
+```
+
+Since then everything is probed at runtime and the installer refuses to finish
+without a working Speaker device. Found by **@jamescutts** (silent failure on a
+64 GB HN7306EA), pinpointed to that variable by **@dmicheel** (who hit it on a
+non-GOPRO HN7306EA-LX005X too) and confirmed by **@DevGrishin**, in
+[CachyOS/linux-cachyos#737](https://github.com/CachyOS/linux-cachyos/issues/737).
 
 ---
 
@@ -98,7 +156,12 @@ The fix is therefore split:
 |---|---|---|
 | `50-px13-soundwire` | `/usr/lib/systemd/system-sleep/` | post hook: dispatches the recovery as a transient unit (`systemd-run --no-block --collect`) and exits immediately — the screen is back in ~3 s |
 | `px13-soundwire-recover.sh` | `/usr/local/lib/` | the actual recovery, ~30 s in the background: unbind PCI → unload the whole SoundWire/ACP module stack (children first) → reload → wait for `Attached` (probe re-downloads the amp firmware) → **always** restart the session PipeWire → reapply HiFi profile, unmute, restore default sink only if nothing better holds it |
+| `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | the probes, shared by every script |
+| — | `/etc/px13-audio-fix.conf` | cache of the ACP PCI address and long name, written while the hardware is healthy — the recovery needs them precisely when the card has already vanished from `/proc/asound` |
 | `test-sdw-module-reload.sh` | — | interactive version of the same recovery; `sudo` it to bring audio back *right now* (plays a test sound and reports SUCCESS/FAIL) |
+
+Install all of it with `bash install-resume-recovery.sh` (it also does a dry run
+with a healthy bus, so you find out it works without having to suspend).
 
 Everything is logged to `/var/log/px13-soundwire-resume.log`.
 
@@ -109,8 +172,9 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 | File (repo) | Installed to | Purpose |
 |---|---|---|
 | `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.0` (DKMS) | Stock 7.1.y tas2783 driver + `Channel Playback` control |
-| `configs/px13-longname-override.conf` | `/usr/share/alsa/ucm2/conf.d/amd-soundwire/ASUSTeKCOMPUTERINC.-ProArtPX13HN7306EAC-1.0-HN7306EAC.conf` | Forces the speaker codec; **unowned by any package** → survives `alsa-ucm-conf` updates |
-| `configs/sof-soundwire_tas2783.conf` | `/usr/share/alsa/ucm2/sof-soundwire/tas2783.conf` | Speaker device for the HiFi profile; sets `tas2783-1 = Left`, `tas2783-2 = Right` on every profile activation (guarded by `ControlExists`) |
+| `configs/ucm-card-override.conf.in` | `/usr/share/alsa/ucm2/conf.d/<CardDriver>/<CardLongName>.conf` — **both probed**, template placeholders substituted at install time | Forces the speaker codec; **unowned by any package** → survives `alsa-ucm-conf` updates |
+| `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | Runtime probes: card, driver, long name, amp count, ACP PCI, PipeWire names |
+| `configs/sof-soundwire_tas2783.conf` | `/usr/share/alsa/ucm2/sof-soundwire/tas2783.conf` | Speaker device for the HiFi profile; sets `tas2783-1 = Left`, `tas2783-2 = Right` on every profile activation (guarded on the **second** amp existing, so a single-amp variant still gets a mono Speaker instead of a broken profile) |
 | `configs/codecs_tas2783_init.conf` | `/usr/share/alsa/ucm2/codecs/tas2783/init.conf` | Volume-control remap (supports both driver generations) |
 | `50-px13-soundwire` | `/usr/lib/systemd/system-sleep/` | Recovers SoundWire after s2idle |
 | `configs/99-echo-cancel.conf` | `~/.config/pipewire/pipewire.conf.d/` | Optional: echo-cancelled mic source for calls |
@@ -140,8 +204,10 @@ uname -r                                   # stock kernel, >= 7.1
 modinfo -k $(uname -r) snd_soc_tas2783_sdw -F filename
 #   -> .../updates/... (the DKMS/patched module, not .../kernel/sound/...)
 
-amixer -D hw:1 cget name='tas2783-1 Channel Playback'   # values=1 (Left)
-amixer -D hw:1 cget name='tas2783-2 Channel Playback'   # values=2 (Right)
+C=$(awk '/soundwire/ && /^ *[0-9]+ \[/ {print $1; exit}' /proc/asound/cards)
+alsaucm -c "$C" list _devices/HiFi | grep Speaker      # must print "Speaker"
+amixer -D "hw:$C" cget name='tas2783-1 Channel Playback'   # values=1 (Left)
+amixer -D "hw:$C" cget name='tas2783-2 Channel Playback'   # values=2 (Right)
 
 pactl list cards | grep "Active Profile"   # HiFi
 speaker-test -D pulse -c2 -l1 -t wav       # voice L/R from the correct side
@@ -154,19 +220,22 @@ If the sides are physically swapped, exchange the two `cset` values in
 
 ## Troubleshooting
 
-- **"Dummy output" / no Speaker device** — the long-name override is not
-  installed or the card long-name differs. Check
-  `cat /proc/asound/card1/id` and `alsaucm -c1 list _devices/HiFi`.
+- **"Dummy output" / no Speaker device** — the long-name override is missing or
+  installed under another SKU's name. `bash install-durable.sh` now detects the
+  right name and refuses to finish without a Speaker device; if you are fixing
+  it by hand, compare `amixer -c <card> info` (the string after the `/`) with
+  the file names in `/usr/share/alsa/ucm2/conf.d/amd-soundwire/`. As a last
+  resort you can force it: `PX13_LONGNAME='<name>' bash install-durable.sh`.
 - **Mono / one speaker only** — the stock module is loaded instead of the
   patched one (`modinfo -k $(uname -r) snd_soc_tas2783_sdw -F filename`
   must point into `updates/`), or the `Channel Playback` controls are absent.
   After a kernel update without dkms, rebuild: `cd module && make LLVM=1`
   and reinstall.
 - **Sound goes to pro-audio profile / "Invalid argument"** — switch profile:
-  `pactl set-card-profile alsa_card.pci-0000_c4_00.5-platform-amd_sdw HiFi`.
-- **Dead after suspend** — install the resume pair (hook + recover script);
-  recover immediately with `sudo /usr/local/lib/px13-soundwire-recover.sh`
-  or `sudo ./test-sdw-module-reload.sh`.
+  `pactl set-card-profile "$(pactl list short cards | awk '/sdw/{print $2;exit}')" HiFi`.
+- **Dead after suspend** — `bash install-resume-recovery.sh`; recover
+  immediately with `sudo /usr/local/lib/px13-soundwire-recover.sh` or
+  `sudo ./test-sdw-module-reload.sh`.
 - **Silent speakers although *everything* looks right** (sink default and
   unmuted, HiFi active, `amixer` switches on) after a resume — that is the
   wiped TAS2783 firmware (`dmesg | grep 'without fw download'`). Same fix as
@@ -203,6 +272,9 @@ a full module reload should not be necessary.
 - **fecet** — CachyOS packaging (`linux-cachyos-px13`,
   `asus-proart-px13-quirks`) for the < 7.1 era.
 - **TI / Niranjan H Y, Baojun Xu, Kevin Lu** — upstream tas2783 driver.
+- **jamescutts, dmicheel, DevGrishin** — found and pinpointed the silent
+  SKU dependency (the UCM long name), which is what made this repo
+  SKU-independent.
 
 ## License
 

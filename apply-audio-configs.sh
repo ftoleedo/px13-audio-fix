@@ -1,11 +1,19 @@
 #!/bin/bash
-# Apply userspace TAS2783 configs (run AFTER rebooting into the new patched kernel).
+# LEGACY (kernels < 7.1, nealstar's patched kernel). On a stock kernel >= 7.1
+# use install-durable.sh instead - it is SKU-independent and validates itself.
 #
-# Repo: https://github.com/YOURUSER/px13-audio-fix
+# Apply userspace TAS2783 configs (run AFTER rebooting into the patched kernel).
+#
+# Repo: https://github.com/ftoleedo/px13-audio-fix
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONF_DIR="$SCRIPT_DIR/configs"
+# shellcheck source=lib/px13-detect.sh
+. "$SCRIPT_DIR/lib/px13-detect.sh"
+
+CARD="$(px13_find_card)" || { echo "ERROR: no SoundWire ALSA card found"; exit 1; }
+echo "==> Using ALSA card $CARD ($(px13_card_longname "$CARD" || echo '?'))"
 
 if [ ! -d "$CONF_DIR" ]; then
     echo "ERROR: $CONF_DIR not found. Run this script from the cloned repo root."
@@ -13,7 +21,7 @@ if [ ! -d "$CONF_DIR" ]; then
 fi
 
 echo "==> Verifying the kernel has the patched controls..."
-if ! amixer -c1 contents 2>/dev/null | grep -q "tas2783-1 Speaker Playback Switch"; then
+if ! amixer -c"$CARD" contents 2>/dev/null | grep -q "tas2783-1 Speaker Playback Switch"; then
     echo "ERROR: control 'tas2783-1 Speaker Playback Switch' not found."
     echo "       Did you reboot into the patched kernel?"
     echo "       uname -r: $(uname -r)"
@@ -66,28 +74,33 @@ systemctl --user restart pipewire pipewire-pulse wireplumber
 sleep 2
 echo ""
 echo "==> Switching card profile to HiFi..."
-pactl set-card-profile alsa_card.pci-0000_c4_00.5-platform-amd_sdw HiFi || \
-    echo "  (profile switch failed — check 'pactl list cards' manually)"
+PWCARD="$(px13_pw_card)" || PWCARD=""
+if [ -n "$PWCARD" ]; then
+    pactl set-card-profile "$PWCARD" HiFi || \
+        echo "  (profile switch failed — check 'pactl list cards' manually)"
+else
+    echo "  (no SoundWire card in PipeWire — check 'pactl list cards')"
+fi
 
 sleep 1
 echo ""
 echo "==> Setting Speaker as default sink..."
-SPEAKER_ID=$(wpctl status | awk '/Audio Coprocessor Speaker/ {gsub(/[^0-9]/,"",$1); print $1; exit}')
-if [ -n "$SPEAKER_ID" ]; then
+if SPEAKER_SINK="$(px13_pw_speaker_sink)"; then
+    SPEAKER_ID=$(pactl list short sinks | awk -v s="$SPEAKER_SINK" '$2 == s { print $1; exit }')
     wpctl set-default "$SPEAKER_ID"
-    echo "  default sink = $SPEAKER_ID (Audio Coprocessor Speaker)"
+    echo "  default sink = $SPEAKER_ID ($SPEAKER_SINK)"
 else
-    echo "  WARN: Audio Coprocessor Speaker not found in wpctl status"
+    echo "  WARN: no SoundWire speaker sink found"
 fi
 
 echo ""
 echo "==> Setting channel mapping (tas2783-1=Left, tas2783-2=Right)..."
-amixer -c1 cset name='tas2783-1 Channel Playback' Left  > /dev/null
-amixer -c1 cset name='tas2783-2 Channel Playback' Right > /dev/null
-amixer -c1 cset name='tas2783-1 Amp Playback Switch' on     > /dev/null
-amixer -c1 cset name='tas2783-1 Speaker Playback Switch' on > /dev/null
-amixer -c1 cset name='tas2783-2 Amp Playback Switch' on     > /dev/null
-amixer -c1 cset name='tas2783-2 Speaker Playback Switch' on > /dev/null
+amixer -c"$CARD" cset name='tas2783-1 Channel Playback' Left  > /dev/null
+amixer -c"$CARD" cset name='tas2783-2 Channel Playback' Right > /dev/null
+amixer -c"$CARD" cset name='tas2783-1 Amp Playback Switch' on     > /dev/null
+amixer -c"$CARD" cset name='tas2783-1 Speaker Playback Switch' on > /dev/null
+amixer -c"$CARD" cset name='tas2783-2 Amp Playback Switch' on     > /dev/null
+amixer -c"$CARD" cset name='tas2783-2 Speaker Playback Switch' on > /dev/null
 
 echo ""
 echo "==> Persisting ALSA state (channels, switches, volumes)..."
@@ -103,6 +116,6 @@ echo "  paplay /usr/share/sounds/freedesktop/stereo/bell.oga"
 echo "  speaker-test -D pulse -c 2 -l 1 -t wav"
 echo ""
 echo "If 'Front Left' comes from the right speaker (channels swapped on your hardware), run:"
-echo "  amixer -c1 cset name='tas2783-1 Channel Playback' Right"
-echo "  amixer -c1 cset name='tas2783-2 Channel Playback' Left"
+echo "  amixer -c$CARD cset name='tas2783-1 Channel Playback' Right"
+echo "  amixer -c$CARD cset name='tas2783-2 Channel Playback' Left"
 echo "  sudo alsactl store"
