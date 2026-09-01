@@ -11,7 +11,12 @@
 #   - reload ALWAYS (even when Attached): the TAS2783 DSP firmware does not
 #     survive s2idle and only a re-probe re-downloads it ("playback without fw
 #     download" = silently muted amp);
-#   - unbind PCI -> rmmod stack (children first) -> modprobe -> bind;
+#   - STOP the session's PipeWire FIRST, then unbind PCI -> rmmod stack
+#     (children first) -> modprobe -> bind. Unloading the codec while userspace
+#     still holds the ALSA card blocks forever in snd_card_disconnect_sync():
+#     an unkillable D state that can only be cleared by a reboot (seen on
+#     7.2.2, 2026-09-01). 7.1 tolerated restarting PipeWire afterwards; 7.2
+#     does not;
 #   - wait for Attached (up to 20 s);
 #   - ALWAYS restart the session's PipeWire (a vanished card wedges the
 #     WirePlumber graph and kills even Bluetooth audio - seen 2026-07-29);
@@ -51,6 +56,34 @@ log "recover: iniciando em background (ACP $PCI, driver $(basename "$DRV"))"
 
 is_bound() { [ -e "/sys/bus/pci/devices/$PCI/driver" ]; }
 
+# --- session user (needed BEFORE the reload, see below) --------------------
+UNAME="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4 ~ /seat/ { print $3; exit }')"
+[ -z "${UNAME:-}" ] && UNAME="$(id -nu 1000 2>/dev/null || echo root)"
+UID_="$(id -u "$UNAME" 2>/dev/null || echo 1000)"; RT="/run/user/$UID_"
+ru() { runuser -u "$UNAME" -- env XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$RT/bus" "$@" 2>>"$LOG"; }
+
+# Release the ALSA card BEFORE unloading anything. Removing the codec driver
+# while userspace still holds the card blocks forever in
+# snd_card_disconnect_sync() - an unkillable D state that takes the reboot with
+# it (kernel 7.2.2, 2026-09-01). On 7.1 the same script got away with
+# restarting PipeWire afterwards; do not rely on that.
+release_card() {
+  if [ -S "$RT/bus" ]; then
+    ru systemctl --user stop wireplumber pipewire pipewire-pulse
+    log "recover: pipewire parado antes do reload (libera o card)"
+    sleep 2
+  fi
+  # fuser prints the PIDs on stdout and the file name on stderr
+  local pids names
+  pids="$(fuser /dev/snd/* 2>/dev/null | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+  if [ -n "$pids" ]; then
+    names="$(ps -o comm= -p $pids 2>/dev/null | sort -u | tr '\n' ' ')"
+    log "AVISO: /dev/snd ainda aberto por [$pids] $names - o rmmod travaria"
+    return 1
+  fi
+  return 0
+}
+
 # There is no "already Attached, skip" shortcut: s2idle wipes the TAS2783 DSP
 # firmware even with the bus Attached ("error playback without fw download" in
 # dmesg - the amp goes silent while every mixer level looks fine; seen
@@ -59,6 +92,11 @@ is_bound && px13_sdw_all_attached &&
   log "recover: codecs Attached, mas recarregando mesmo assim (fw do amp nao sobrevive ao s2idle)"
 
 # --- full module reload (order mapped with lsmod, kernel 7.1.5) -------------
+if ! release_card; then
+  log "recover: ABORTANDO o reload - o card segue em uso e o rmmod travaria o kernel"
+  [ -S "$RT/bus" ] && ru systemctl --user start wireplumber pipewire pipewire-pulse
+  exit 1
+fi
 [ -e "/sys/bus/pci/devices/$PCI/driver" ] && { echo "$PCI" > "$DRV/unbind" 2>>"$LOG"; sleep 1; }
 
 # codec modules first (children); discovered from lsmod so other SoundWire
@@ -91,10 +129,6 @@ px13_sdw_all_attached || log "recover: codecs seguem fora - audio interno indisp
 
 # ALWAYS restart the session's PipeWire: a vanished SoundWire card leaves the
 # WirePlumber graph wedged and takes Bluetooth audio down with it
-UNAME="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4 ~ /seat/ { print $3; exit }')"
-[ -z "${UNAME:-}" ] && UNAME="$(id -nu 1000 2>/dev/null || echo root)"
-UID_="$(id -u "$UNAME" 2>/dev/null || echo 1000)"; RT="/run/user/$UID_"
-ru() { runuser -u "$UNAME" -- env XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS="unix:path=$RT/bus" "$@" 2>>"$LOG"; }
 if [ -S "$RT/bus" ]; then
   ru systemctl --user restart wireplumber pipewire pipewire-pulse
   sleep 4
