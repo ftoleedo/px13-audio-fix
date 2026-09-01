@@ -53,7 +53,17 @@ if [ "${CH:-0}" -ge 2 ]; then
 elif [ "${AMPS:-0}" -lt 2 ]; then
   warn "only ${AMPS:-0} amp(s) with controls - single-amp variant, mono is expected"
 else
-  bad "stereo channel assignment" "no 'Channel Playback' control: the stock driver is loaded, not the patched one."
+  # "installed on disk" and "running in memory" are different things: modprobe -r
+  # fails while the stack is in use, so a fresh install can sit there unloaded.
+  MEM="$(cat /sys/module/snd_soc_tas2783_sdw/srcversion 2>/dev/null)"
+  DISK="$(modinfo -k "$(uname -r)" snd_soc_tas2783_sdw -F srcversion 2>/dev/null)"
+  if [ -n "$MEM" ] && [ -n "$DISK" ] && [ "$MEM" != "$DISK" ]; then
+    bad "stereo channel assignment" "the patched module is installed but the OLD one is still in memory
+           (srcversion $MEM in memory vs $DISK on disk).
+           Reboot, or reload the whole stack: sudo bash test-sdw-module-reload.sh"
+  else
+    bad "stereo channel assignment" "no 'Channel Playback' control: the stock driver is loaded, not the patched one."
+  fi
 fi
 
 # 3. UCM exposes a Speaker device --------------------------------------------
