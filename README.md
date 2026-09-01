@@ -38,7 +38,7 @@ series). On the PX13 two problems remain:
 
 | # | Problem | Symptom | Fix in this repo |
 |---|---------|---------|------------------|
-| 1 | The machine driver does not tag the card with `spk:tas2783`, so `alsa-ucm-conf` never creates the Speaker device | No sound at all / "Dummy Output" / only pro-audio profile | UCM **long-name override** in `conf.d/amd-soundwire/` forcing `SpeakerCodec = tas2783` |
+| 1 | **On 7.1:** the machine driver does not tag the card with `spk:tas2783`, so `alsa-ucm-conf` never creates the Speaker device. **On 7.2** the kernel *does* emit the tag — but `alsa-ucm-conf` ships nothing for tas2783, so UCM now tries to load a `sof-soundwire/tas2783.conf` that does not exist | 7.1: no sound / "Dummy Output" / only pro-audio. 7.2: the card's UCM fails to open outright (`failed to import hw:1 use case configuration -2`) | The three UCM files in `configs/` (they are what `alsa-ucm-conf` is missing) plus the **long-name override** that pulls in the codec init |
 | 2 | The driver initializes **both** amps with DSP cluster index `0x01` (the ASUS ACPI tables carry no usable SDCA/DisCo function data, so the driver falls back to a static init sequence) | Mono from **one** speaker — which one can change between boots — or a phantom "center" image | Small **DKMS module** (stock driver + channel-selection control) + UCM setting `Left`/`Right` per amp |
 | 3 | s2idle kills the audio stack in **two layers**: the slaves drop off the SoundWire bus (a plain PCI unbind/bind of `snd_pci_ps` does **not** bring them back), and even when the bus still reports `Attached` the TAS2783 DSP has lost its **firmware** (`error playback without fw download` — silent mute while every mixer level looks fine) | Speakers dead/mute after suspend; the vanished card also wedges the WirePlumber graph so even **Bluetooth** audio stops | Detached `systemd-sleep` hook (`systemd-run`) + full module-stack reload → re-probe re-downloads the firmware ([details](#suspendresume-s2idle-recovery)) |
 
@@ -146,6 +146,7 @@ on an API that moves. Twice now an update has degraded the audio **silently**:
 |---|---|---|
 | 7.2 | `sdca_parse_function()` gained a `struct sdw_slave *` parameter | DKMS build failed during the pacman transaction, the **stock** module loaded instead, `Channel Playback` disappeared → mono from one speaker |
 | 7.3-rc1 | the same function *lost* that parameter again | same, if built from the 7.2 source |
+| 7.2 | the kernel started tagging the card `spk:tas2783` — while `alsa-ucm-conf` (1.2.16.1) still ships no tas2783 config | on a machine **without** this repo, worse than 7.1: UCM cannot open the card at all instead of silently skipping the Speaker device |
 | (any) | a driver swap under a live WirePlumber | the stored per-route volume can come back at **0%** — sink unmuted, HiFi active, `paplay` exits 0, and nothing comes out |
 
 Nothing logs an error for either of these, which is why there is a checker:
@@ -158,6 +159,18 @@ It verifies the four invariants — patched module in `updates/`, DKMS built for
 the running kernel, both amps on different channels, and a speaker sink that is
 neither muted nor at 0% — and prints the exact command to fix each one. Run it
 after every kernel update; exit code is non-zero if anything is off.
+
+Verified on 7.2.2 by pointing `ALSA_CONFIG_UCM2` at a copy of the system tree:
+with none of this repo's files, `alsaucm -c1 list _devices/HiFi` dies with
+`could not open .../sof-soundwire/tas2783.conf`; with the two codec files but no
+long-name override it dies with `variable '${var:SpeakerMixerElem}' is not
+defined` (the base config's `If.spk` regex still does not list tas2783, so the
+codec init is never included). All three files are still required on 7.2 — the
+long-name override for a new reason.
+
+The proper upstream fix for this half now belongs in **alsa-ucm-conf**, not the
+kernel: a `sof-soundwire/tas2783.conf` and `codecs/tas2783/` upstream would
+retire two of the three files here.
 
 The module now carries a `LINUX_VERSION_CODE` guard on that call and builds
 clean on 7.2 and 7.3-rc1. Upstream 7.2 also absorbed two of the three local
