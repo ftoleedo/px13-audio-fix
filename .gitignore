@@ -16,3 +16,6 @@ module/.module-common.o
 
 # working material (not repo content)
 DRAFT-github-comment-737.md
+
+# vendor Windows driver blob (kept locally, never committed)
+*.exe

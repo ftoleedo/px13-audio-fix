@@ -75,7 +75,7 @@ if command -v dkms >/dev/null 2>&1; then
   echo "    OK via DKMS (rebuilds itself on every kernel update)"
 else
   echo "    dkms not found - manual build (redo it after every kernel update!)"
-  ( cd "$REPO/module" && make KVER="$KREL" LLVM=1 )
+  ( cd "$REPO/module" && make KVER="$KREL" )
   root_run install -Dm644 "$REPO/module/snd-soc-tas2783-sdw.ko" \
        "/usr/lib/modules/$KREL/updates/snd-soc-tas2783-sdw.ko"
   root_run depmod -a "$KREL"
@@ -177,6 +177,17 @@ if SPK="$(px13_pw_speaker_sink_as asuser)"; then
   ID="$(asuser pactl list short sinks 2>/dev/null | awk -v s="$SPK" '$2 == s { print $1; exit }')" || ID=""
   [ -n "$ID" ] && asuser wpctl set-default "$ID" 2>/dev/null || true
   echo "    default sink = $SPK"
+  # A sink at 0% is the "everything looks right and nothing comes out" trap:
+  # WirePlumber persists a per-route volume, and a driver/control change under
+  # it (a kernel update swapping the module) can leave that stored volume at
+  # zero. Unmute and lift it only when it is at rock bottom - never touch a
+  # volume the user actually chose.
+  asuser pactl set-sink-mute "$SPK" 0 2>/dev/null || true
+  VOL="$(asuser pactl get-sink-volume "$SPK" 2>/dev/null | sed -n 's/.*\/ *\([0-9]\+\)%.*/\1/p' | head -1)" || VOL=""
+  if [ -n "${VOL:-}" ] && [ "$VOL" -eq 0 ] 2>/dev/null; then
+    asuser pactl set-sink-volume "$SPK" 60% 2>/dev/null || true
+    echo "    speaker volume was 0% (silent sink) -> raised to 60%"
+  fi
 fi
 
 echo "==> 7/8 Persisting the ALSA state"
