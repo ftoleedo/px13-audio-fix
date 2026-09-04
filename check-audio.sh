@@ -22,9 +22,11 @@ CARD="$(px13_find_card)" || { bad "SoundWire card present" "no card in /proc/aso
 ok "SoundWire card present (card $CARD, $(px13_card_longname "$CARD" || echo '?'))"
 
 # 1. the patched module, not the stock one -----------------------------------
+# DKMS drops it in updates/ on Arch and in extra/ on Fedora; both outrank the
+# in-tree copy under kernel/ in depmod's search order.
 MODPATH="$(modinfo -k "$(uname -r)" snd_soc_tas2783_sdw -F filename 2>/dev/null)"
 case "$MODPATH" in
-  */updates/*) ok "patched module installed ($MODPATH)" ;;
+  */updates/*|*/extra/*) ok "patched module installed ($MODPATH)" ;;
   "")          bad "patched module installed" "snd_soc_tas2783_sdw not found for this kernel" ;;
   *)           bad "patched module installed" "stock module in use ($MODPATH).
            A kernel update rebuilt nothing. Check: dkms status
