@@ -4,9 +4,10 @@ Working **stereo** on the internal speakers of the ASUS ProArt PX13 (HN7306*,
 AMD Strix Halo) — on a **stock kernel ≥ 7.1**, surviving kernel and
 alsa-ucm-conf updates.
 
-**Kernel 7.2 users:** the DKMS module had to be rebased — upstream changed
-`sdca_parse_function()` and the old source no longer compiled, so the build
-failed and the *stock* driver silently took over (stereo gone). Pull and re-run
+**Kernel 7.1 / 7.2 / 7.3 users:** one module source now builds on all three
+(`LINUX_VERSION_CODE` guards cover the two SoundWire/SDCA calls that changed
+shape). If an earlier checkout left you with a failed DKMS build and the
+*stock* driver silently taking over (stereo gone), pull and re-run
 `bash install-durable.sh`, then `bash check-audio.sh`. Details in
 [Kernel updates](#kernel-updates-what-breaks-and-how-to-tell).
 
@@ -16,9 +17,10 @@ at install time (`lib/px13-detect.sh`), and the installer now **fails loudly**
 instead of exiting 0 without sound. See
 [SKU independence](#sku-independence-why-it-used-to-break-on-other-px13s).
 
-Tested on CachyOS `linux-cachyos` 7.1.3, 7.1.8 and 7.2.2 (HN7306EAC) and
-reported working on HN7306EA / HN7306EA-LX005X. The module also compiles
-against 7.3-rc1. Should work on Arch, Fedora and other distros with minor path
+Tested on CachyOS `linux-cachyos` 7.1.3, 7.1.8 and 7.2.2 and Fedora 44
+7.1.12 (HN7306EAC) and reported working on HN7306EA / HN7306EA-LX005X. The
+module compiles clean against Fedora's 7.1.12, 7.1.13, 7.2.3 and 7.3.0-rc1
+kernel-devel trees. Should work on Arch, Fedora and other distros with minor path
 adjustments — the build follows whatever toolchain the target kernel was built
 with (clang on CachyOS, gcc on Arch stock and Fedora), so no manual `LLVM=1`.
 
@@ -144,8 +146,9 @@ on an API that moves. Twice now an update has degraded the audio **silently**:
 
 | Kernel | What changed | What you saw |
 |---|---|---|
-| 7.2 | `sdca_parse_function()` gained a `struct sdw_slave *` parameter | DKMS build failed during the pacman transaction, the **stock** module loaded instead, `Channel Playback` disappeared → mono from one speaker |
-| 7.3-rc1 | the same function *lost* that parameter again | same, if built from the 7.2 source |
+| 7.2 | `sdca_parse_function()` lost its `struct sdca_function_desc *` parameter (now read from `function_data->desc`), and resume moved to a new `sdw_slave_wait_for_init()` helper | DKMS build failed during the pacman transaction, the **stock** module loaded instead, `Channel Playback` disappeared → mono from one speaker |
+| 7.3-rc1 | the same function also lost its `struct sdw_slave *` parameter | same, if built from the 7.2 source |
+| 7.1 (after the 7.2 rebase) | a 7.2-only source has neither the 7.1 `sdca_parse_function()` shape nor `sdw_slave_wait_for_init()` | same again, on any distro still shipping 7.1.y (Fedora 44 at the time of writing) |
 | 7.2 | the kernel started tagging the card `spk:tas2783` — while `alsa-ucm-conf` (1.2.16.1) still ships no tas2783 config | on a machine **without** this repo, worse than 7.1: UCM cannot open the card at all instead of silently skipping the Speaker device |
 | (any) | a driver swap under a live WirePlumber | the stored per-route volume can come back at **0%** — sink unmuted, HiFi active, `paplay` exits 0, and nothing comes out |
 
@@ -155,7 +158,7 @@ Nothing logs an error for either of these, which is why there is a checker:
 bash check-audio.sh
 ```
 
-It verifies the four invariants — patched module in `updates/`, DKMS built for
+It verifies the four invariants — patched module in `updates/` (`extra/` on Fedora), DKMS built for
 the running kernel, both amps on different channels, and a speaker sink that is
 neither muted nor at 0% — and prints the exact command to fix each one. Run it
 after every kernel update; exit code is non-zero if anything is off.
@@ -172,8 +175,9 @@ The proper upstream fix for this half now belongs in **alsa-ucm-conf**, not the
 kernel: a `sof-soundwire/tas2783.conf` and `codecs/tas2783/` upstream would
 retire two of the three files here.
 
-The module now carries a `LINUX_VERSION_CODE` guard on that call and builds
-clean on 7.2 and 7.3-rc1. Upstream 7.2 also absorbed two of the three local
+The module now carries `LINUX_VERSION_CODE` guards on that call and on the
+resume wait (a copy of 7.2's `sdw_slave_wait_for_init()` inline for 7.1), and
+builds clean on 7.1.12, 7.1.13, 7.2.3 and 7.3.0-rc1. Upstream 7.2 also absorbed two of the three local
 patches (the `tas25xx_*_misc` stubs and the `0x` firmware-name prefix, which
 upstream implemented better, with a fallback), so **the entire local delta is
 now the single `Channel Playback` control** — 31 lines over stock.
@@ -228,7 +232,7 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 
 | File (repo) | Installed to | Purpose |
 |---|---|---|
-| `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.0` (DKMS) | Stock 7.1.y tas2783 driver + `Channel Playback` control |
+| `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.0` (DKMS) | Stock 7.2.y tas2783 driver + `Channel Playback` control, version-guarded for 7.1 and 7.3 |
 | `configs/ucm-card-override.conf.in` | `/usr/share/alsa/ucm2/conf.d/<CardDriver>/<CardLongName>.conf` — **both probed**, template placeholders substituted at install time | Forces the speaker codec; **unowned by any package** → survives `alsa-ucm-conf` updates |
 | `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | Runtime probes: card, driver, long name, amp count, ACP PCI, PipeWire names |
 | `check-audio.sh` | — | Post-update health check; non-zero exit if any invariant broke |
@@ -242,8 +246,8 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 
 The DKMS module is the stock `linux-7.2.y` `tas2783-sdw.c` with one functional
 addition — nealstar's channel-selection control rebased onto the upstream
-driver (plus a `LINUX_VERSION_CODE` guard on the one call whose signature
-differs on 7.3+):
+driver (plus `LINUX_VERSION_CODE` guards for 7.1 and 7.3, where two of the
+APIs it uses differ):
 
 ```
 tas2783-N Channel Playback : enum { Off, Left, Right }
@@ -261,7 +265,7 @@ Without it both amps stay at the boot value `0x01` written by
 ```bash
 uname -r                                   # stock kernel, >= 7.1
 modinfo -k $(uname -r) snd_soc_tas2783_sdw -F filename
-#   -> .../updates/... (the DKMS/patched module, not .../kernel/sound/...)
+#   -> .../updates/... or .../extra/... (the DKMS/patched module, not .../kernel/sound/...)
 
 C=$(awk '/soundwire/ && /^ *[0-9]+ \[/ {print $1; exit}' /proc/asound/cards)
 alsaucm -c "$C" list _devices/HiFi | grep Speaker      # must print "Speaker"
