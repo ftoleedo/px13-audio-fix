@@ -40,6 +40,32 @@
 
 #include "tas2783.h"
 
+/*
+ * sdw_slave_wait_for_init() only exists from 7.2 (a static inline in
+ * <linux/soundwire/sdw.h>). Carry a copy of it for 7.1 so the same resume
+ * path builds on every kernel this repo supports.
+ */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(7, 2, 0)
+static inline int sdw_slave_wait_for_init(struct sdw_slave *slave, int timeout_ms)
+{
+	unsigned long time;
+
+	if (!slave)
+		return 0;
+
+	time = wait_for_completion_timeout(&slave->initialization_complete,
+					   msecs_to_jiffies(timeout_ms));
+	if (!time) {
+		dev_err(&slave->dev, "Initialization not complete\n");
+		return -ETIMEDOUT;
+	}
+
+	slave->unattach_request = 0;
+
+	return 0;
+}
+#endif
+
 #define TIMEOUT_FW_DL_MS (3000)
 #define FW_DL_OFFSET	84 /* binary file information */
 #define FW_FL_HDR	20 /* minimum number of bytes in one chunk */
@@ -1357,13 +1383,18 @@ static s32 tas_sdw_probe(struct sdw_slave *peripheral,
 
 		/* Parse the function */
 		/*
-		 * sdca_parse_function() dropped its struct sdw_slave argument in
-		 * 7.3 (it reaches the peripheral through function_data->desc).
+		 * sdca_parse_function() changed shape twice: 7.1 takes the
+		 * function descriptor as its own argument, 7.2 reads it from
+		 * function_data->desc, and 7.3 also dropped the struct sdw_slave
+		 * argument (it reaches the peripheral through the descriptor).
 		 */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
 		ret = sdca_parse_function(dev, function_data);
-#else
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
 		ret = sdca_parse_function(dev, peripheral, function_data);
+#else
+		ret = sdca_parse_function(dev, peripheral, function_data->desc,
+					  function_data);
 #endif
 		if (!ret)
 			tas_dev->sa_func_data = function_data;
