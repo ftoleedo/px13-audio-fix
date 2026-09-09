@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Gate for px13-audio-fix: the module must build against EVERY kernel header
+# tree installed on this machine that the repo claims to support (>= 7.1).
+#
+# This exists because the two regressions this repo has shipped were both
+# cross-version build breaks that nothing caught: 7.2 changed
+# sdca_parse_function() (53b04a3) and the 7.2 rebase then broke 7.1 (PR #1).
+# In both cases DKMS failed quietly, the stock driver loaded, and the symptom
+# was mono audio - never a visible build error.
+#
+# Offline: it only uses header trees already present under /usr/lib/modules.
+# To widen coverage, install more <kernel>-headers packages; to cover a distro
+# kernel you do not run, extract its kernel-devel somewhere and point
+# PX13_EXTRA_KDIRS at it (colon-separated).
+
+set -uo pipefail
+cd "$(dirname "$0")"
+
+MIN_KVER="7.1"          # the oldest kernel the README promises
+FAILED=0
+TESTED=0
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+red()   { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; FAILED=1; }
+green() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
+skip()  { printf '  \033[33mSKIP\033[0m  %s\n' "$1"; }
+
+echo "px13-audio-fix - gate"
+echo
+
+# 1. cross-version module build ----------------------------------------------
+KDIRS=()
+for b in /usr/lib/modules/*/build; do
+  [ -f "$b/Makefile" ] && KDIRS+=("$b")
+done
+IFS=':' read -r -a EXTRA <<< "${PX13_EXTRA_KDIRS:-}"
+for e in "${EXTRA[@]}"; do
+  [ -n "$e" ] && [ -f "$e/Makefile" ] && KDIRS+=("$e")
+done
+
+if [ ${#KDIRS[@]} -eq 0 ]; then
+  red "no kernel header tree found - install linux-headers, or set PX13_EXTRA_KDIRS"
+else
+  for kdir in "${KDIRS[@]}"; do
+    kver="$(make -s -C "$kdir" kernelversion 2>/dev/null)"
+    [ -n "$kver" ] || kver="$(basename "$(dirname "$kdir")")"
+
+    # the repo supports >= 7.1 only; older trees have a different SDCA API and
+    # are expected not to build.
+    if [ "$(printf '%s\n%s\n' "$MIN_KVER" "$kver" | sort -V | head -1)" != "$MIN_KVER" ]; then
+      skip "module builds on $kver (older than $MIN_KVER - not supported)"
+      continue
+    fi
+
+    work="$TMP/$(echo "$kver" | tr '/' '_')"
+    mkdir -p "$work"
+    cp -f module/tas2783-sdw.c module/tas2783.h module/Makefile "$work/"
+    if log="$(make -C "$work" KDIR="$kdir" 2>&1)"; then
+      if echo "$log" | grep -qE '^[^ ]+\.c:[0-9]+:[0-9]+: warning:'; then
+        red "module builds warning-free on $kver"
+        echo "$log" | grep -E '^[^ ]+\.c:[0-9]+:[0-9]+: warning:' | sed 's/^/           /'
+      else
+        green "module builds clean on $kver"
+      fi
+    else
+      red "module builds on $kver"
+      echo "$log" | grep -E 'error:' | head -5 | sed 's/^/           /'
+    fi
+    TESTED=$((TESTED + 1))
+  done
+fi
+
+# A single kernel proves nothing about the API drift this gate exists to catch.
+[ "$TESTED" -ge 2 ] || skip "only $TESTED kernel(s) available - install headers for another series"
+
+# 2. the shell scripts still parse -------------------------------------------
+for s in ./*.sh lib/*.sh; do
+  bash -n "$s" || { red "syntax: $s"; continue; }
+done
+green "shell scripts parse"
+
+if command -v shellcheck >/dev/null 2>&1; then
+  if shellcheck -S warning ./*.sh lib/*.sh >"$TMP/sc.log" 2>&1; then
+    green "shellcheck clean"
+  else
+    red "shellcheck"
+    head -20 "$TMP/sc.log" | sed 's/^/           /'
+  fi
+else
+  skip "shellcheck not installed"
+fi
+
+echo
+[ "$FAILED" -eq 0 ] && echo "Gate PASSED" || echo "Gate FAILED"
+exit "$FAILED"

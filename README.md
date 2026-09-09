@@ -163,6 +163,22 @@ the running kernel, both amps on different channels, and a speaker sink that is
 neither muted nor at 0% — and prints the exact command to fix each one. Run it
 after every kernel update; exit code is non-zero if anything is off.
 
+`check-audio.sh` runs on the machine *after* an update has already broken it.
+To catch the same class of breakage before it ships, `bash .gate` builds the
+module against every kernel header tree installed here (skipping anything older
+than 7.1, which the repo does not support) and fails on the first error or
+warning:
+
+```bash
+bash .gate                                  # every /usr/lib/modules/*/build
+PX13_EXTRA_KDIRS=/path/to/kernel-devel bash .gate   # plus a tree you do not run
+```
+
+One kernel proves nothing about API drift, so it warns when fewer than two are
+available. Both regressions above would have been caught by it: install headers
+for a second series (or extract a distro `kernel-devel` and point
+`PX13_EXTRA_KDIRS` at it) before releasing a module change.
+
 Verified on 7.2.2 by pointing `ALSA_CONFIG_UCM2` at a copy of the system tree:
 with none of this repo's files, `alsaucm -c1 list _devices/HiFi` dies with
 `could not open .../sof-soundwire/tas2783.conf`; with the two codec files but no
