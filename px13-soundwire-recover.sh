@@ -101,9 +101,42 @@ release_card() {
 # There is no "already Attached, skip" shortcut: s2idle wipes the TAS2783 DSP
 # firmware even with the bus Attached ("error playback without fw download" in
 # dmesg - the amp goes silent while every mixer level looks fine; seen
-# 2026-07-30). Only a re-probe re-downloads it. ALWAYS reload.
+# 2026-07-30 on the 7.1 driver). Only a re-probe re-downloads it, so the
+# default is to ALWAYS reload.
+#
+# PX13_RECOVER_POLICY (env, or a line in /etc/px13-audio-fix.conf):
+#   auto    reload only if the ACP is unbound or a codec is not Attached.
+#           Otherwise touch nothing: with the 7.3-based module the amps
+#           re-initialise themselves on resume and the driver re-applies the
+#           Channel Playback assignment, so a healthy resume needs no reload
+#           and no PipeWire restart (measured 2026-09-12: stereo back on its
+#           own, no 26 s gap, browser audio untouched).
+#           DEFAULT on kernel >= 7.3. Not below: a PCM left open across s2idle
+#           comes back running but silent there, because the SoundWire ports
+#           are never re-prepared - fixed in 7.3's snd_soc_sdw_utils
+#           ("prepare the stream again when resuming"), which a codec module
+#           cannot carry. The PipeWire restart is what hides that on 7.1/7.2.
+#   always  reload unconditionally. DEFAULT on kernel < 7.3.
+#   never   touch nothing, log the bus state. For testing.
+KMAJ="$(uname -r | cut -d. -f1)"; KMIN="$(uname -r | cut -d. -f2 | tr -dc 0-9)"
+if [ "$KMAJ" -gt 7 ] || { [ "$KMAJ" -eq 7 ] && [ "${KMIN:-0}" -ge 3 ]; }; then
+  DEFAULT_POLICY=auto; else DEFAULT_POLICY=always; fi
+POLICY="${PX13_RECOVER_POLICY:-$(px13_cache_get PX13_RECOVER_POLICY 2>/dev/null || echo "$DEFAULT_POLICY")}"
+case "$POLICY" in
+  never)
+    log "recover: POLICY=never - sem reload. bus:$(px13_sdw_status_str) bound:$(is_bound && echo sim || echo nao)"
+    exit 0 ;;
+  auto)
+    if is_bound && px13_sdw_all_attached; then
+      log "recover: POLICY=auto - bus sadio, nada a fazer. bus:$(px13_sdw_status_str)"
+      exit 0
+    fi
+    log "recover: POLICY=auto - bus com problema, recarregando. bus:$(px13_sdw_status_str) bound:$(is_bound && echo sim || echo nao)" ;;
+  always) ;;
+  *) log "recover: POLICY='$POLICY' desconhecida - usando always" ;;
+esac
 is_bound && px13_sdw_all_attached &&
-  log "recover: codecs Attached, mas recarregando mesmo assim (fw do amp nao sobrevive ao s2idle)"
+  log "recover: codecs Attached, mas recarregando mesmo assim (POLICY=$POLICY)"
 
 # --- full module reload (order derived from lsmod at run time, see below) -----
 if ! release_card; then

@@ -288,7 +288,7 @@ The fix is therefore split:
 | File (repo) | Installed to | Purpose |
 |---|---|---|
 | `50-px13-soundwire` | `/usr/lib/systemd/system-sleep/` | post hook: dispatches the recovery as a transient unit (`systemd-run --no-block --collect`) and exits immediately — the screen is back in ~3 s |
-| `px13-soundwire-recover.sh` | `/usr/local/lib/` | the actual recovery, ~30 s in the background: unbind PCI → unload the whole SoundWire/ACP module stack (order derived from `lsmod` at run time — zero-refcount modules first, in passes — so a renamed platform module on a new kernel cannot leave part of the stack loaded, as `snd_sof_amd_acp7x` did on 7.3) → reload → wait for `Attached` (probe re-downloads the amp firmware) → **always** restart the session PipeWire → reapply HiFi profile, unmute, restore default sink only if nothing better holds it |
+| `px13-soundwire-recover.sh` | `/usr/local/lib/` | the actual recovery. On kernel ≥ 7.3 the default policy is `auto`: it waits 10 s for the resume to settle and, if the ACP is bound and every codec is `Attached`, does **nothing** — the 7.3-based module re-initialises the amps and re-applies the channel assignment by itself, so a healthy resume costs no silence and no PipeWire restart. Only a broken bus (or `PX13_RECOVER_POLICY=always`, the default below 7.3) triggers the full reload, ~30 s in the background: unbind PCI → unload the whole SoundWire/ACP module stack (order derived from `lsmod` at run time — zero-refcount modules first, in passes — so a renamed platform module on a new kernel cannot leave part of the stack loaded, as `snd_sof_amd_acp7x` did on 7.3) → reload → wait for `Attached` (probe re-downloads the amp firmware) → **always** restart the session PipeWire → reapply HiFi profile, unmute, restore default sink only if nothing better holds it |
 | `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | the probes, shared by every script |
 | — | `/etc/px13-audio-fix.conf` | cache of the ACP PCI address and long name, written while the hardware is healthy — the recovery needs them precisely when the card has already vanished from `/proc/asound` |
 | `test-sdw-module-reload.sh` | — | interactive version of the same recovery; `sudo` it to bring audio back *right now* (plays a test sound and reports SUCCESS/FAIL) |
@@ -304,7 +304,7 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 
 | File (repo) | Installed to | Purpose |
 |---|---|---|
-| `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.1` (DKMS) | Stock 7.3 tas2783 driver (with its s2idle resume fixes) + `Channel Playback` control; the two calls that differ on 7.1/7.2 are probed from the target kernel's headers at build time |
+| `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.2` (DKMS) | Stock 7.3 tas2783 driver (with its s2idle resume fixes) + `Channel Playback` control; the two calls that differ on 7.1/7.2 are probed from the target kernel's headers at build time |
 | `configs/ucm-card-override.conf.in` | `/usr/share/alsa/ucm2/conf.d/<CardDriver>/<CardLongName>.conf` — **both probed**, template placeholders substituted at install time | Forces the speaker codec; **unowned by any package** → survives `alsa-ucm-conf` updates |
 | `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | Runtime probes: card, driver, long name, amp count, ACP PCI, PipeWire names |
 | `90-px13-rt721-no-autosuspend.rules` | `/etc/udev/rules.d/` (only if an rt721 is on the bus) | Keeps the jack codec out of runtime suspend — on 7.3-rc2 it never resumes, and PipeWire drops the whole HiFi profile with it |

@@ -11,7 +11,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 UCM="${UCM_DIR:-/usr/share/alsa/ucm2}"
 DKMS_NAME=snd-soc-tas2783-sdw-px13
-DKMS_VER=1.1
+DKMS_VER=1.2
 MARKER=px13-audio-fix
 RECOVERY_HOOK=/usr/lib/systemd/system-sleep/50-px13-soundwire
 RECOVERY_SCRIPT=/usr/local/lib/px13-soundwire-recover.sh

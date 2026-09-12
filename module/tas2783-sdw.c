@@ -112,6 +112,15 @@ struct tas2783_prv {
 	struct calibration_data cali_data;
 	struct sdw_slave *sdw_peripheral;
 	struct sdca_function_data *sa_func_data;
+	/*
+	 * Last Channel Playback value written by userspace, re-applied after
+	 * every (re-)initialisation: the resume path drops the regcache and
+	 * replays the init sequence, which puts cluster index 0x01 on every
+	 * amp - both speakers Left - and nothing else restores it when the
+	 * card survives s2idle without a PipeWire restart.
+	 */
+	unsigned int user_ch;
+	bool user_ch_set;
 	enum sdw_slave_status status;
 	/* calibration */
 	struct mutex calib_lock;
@@ -656,6 +665,36 @@ static SOC_VALUE_ENUM_SINGLE_DECL(tas2783_ch_enum,
 		     SDCA_CTL_UDMPU_CLUSTERINDEX, 0),
 	0, 0x7, tas2783_ch_select, tas2783_ch_values);
 
+static int tas2783_ch_put(struct snd_kcontrol *kcontrol,
+			  struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct tas2783_prv *tas_dev = snd_soc_component_get_drvdata(component);
+	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
+	unsigned int item = ucontrol->value.enumerated.item[0];
+
+	if (item >= e->items)
+		return -EINVAL;
+	tas_dev->user_ch = snd_soc_enum_item_to_val(e, item);
+	tas_dev->user_ch_set = true;
+	return snd_soc_put_enum_double(kcontrol, ucontrol);
+}
+
+/* Re-apply what userspace asked for, after init has reset it. */
+static void tas2783_restore_user_state(struct tas2783_prv *tas_dev)
+{
+	int ret;
+
+	if (!tas_dev->user_ch_set)
+		return;
+	ret = regmap_write(tas_dev->regmap,
+			   SDW_SDCA_CTL(1, TAS2783_SDCA_ENT_PPU21,
+					SDCA_CTL_UDMPU_CLUSTERINDEX, 0),
+			   tas_dev->user_ch);
+	if (ret)
+		dev_warn(tas_dev->dev, "channel restore failed: %d\n", ret);
+}
+
 static const struct snd_kcontrol_new tas2783_snd_controls[] = {
 	SOC_SINGLE_RANGE_EXT_TLV("Amp Volume", TAS2783_AMP_LEVEL,
 				 1, 0, 20, 0, tas2783_amp_getvol,
@@ -663,7 +702,8 @@ static const struct snd_kcontrol_new tas2783_snd_controls[] = {
 	SOC_SINGLE_RANGE_EXT_TLV("Speaker Volume", TAS2783_DVC_LVL,
 				 0, 0, 200, 1, tas2783_digital_getvol,
 				 tas2783_digital_putvol, tas2781_dvc_tlv),
-	SOC_ENUM("Channel Playback", tas2783_ch_enum),
+	SOC_ENUM_EXT("Channel Playback", tas2783_ch_enum,
+		     snd_soc_get_enum_double, tas2783_ch_put),
 };
 
 static s32 tas2783_validate_calibdata(struct tas2783_prv *tas_dev,
@@ -1302,11 +1342,13 @@ static s32 tas_io_init(struct device *dev, struct sdw_slave *slave)
 			ret = regmap_multi_reg_write(tas_dev->regmap, tas2783_init_seq,
 						     ARRAY_SIZE(tas2783_init_seq));
 
-		if (ret)
+		if (ret) {
 			dev_err(tas_dev->dev,
 				"init writes failed, err=%d", ret);
-		else
+		} else {
 			tas_dev->hw_init = true;
+			tas2783_restore_user_state(tas_dev);
+		}
 	}
 
 	return ret;

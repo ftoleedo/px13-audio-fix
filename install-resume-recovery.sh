@@ -53,7 +53,8 @@ fi
 
 echo "==> 3/3 Dry run: recovering NOW, with a healthy bus (~30 s, audio drops out)"
 echo "    before:$(px13_sdw_status_str)"
-root_run "$RECOVER"
+# force a real reload: under the default 'auto' policy a healthy bus is a no-op
+root_run env PX13_RECOVER_POLICY=always PX13_RESUME_SETTLE=0 "$RECOVER"
 echo "    after :$(px13_sdw_status_str)"
 echo "    --- log ---"
 root_run tail -n 6 /var/log/px13-soundwire-resume.log 2>/dev/null | sed 's/^/    /' || true
