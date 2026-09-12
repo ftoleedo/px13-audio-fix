@@ -97,7 +97,7 @@ release_card() {
 is_bound && px13_sdw_all_attached &&
   log "recover: codecs Attached, mas recarregando mesmo assim (fw do amp nao sobrevive ao s2idle)"
 
-# --- full module reload (order mapped with lsmod, kernel 7.1.5) -------------
+# --- full module reload (order derived from lsmod at run time, see below) -----
 if ! release_card; then
   log "recover: ABORTANDO o reload - o card segue em uso e o rmmod travaria o kernel"
   [ -S "$RT/bus" ] && ru systemctl --user start pipewire.socket pipewire-pulse.socket \
@@ -107,20 +107,41 @@ if ! release_card; then
 fi
 [ -e "/sys/bus/pci/devices/$PCI/driver" ] && { echo "$PCI" > "$DRV/unbind" 2>>"$LOG"; sleep 1; }
 
-# codec modules first (children); discovered from lsmod so other SoundWire
-# codec sets (rt711/rt722/cs35l56/...) are handled too, not just this laptop's.
+# Unload order is derived from lsmod, not from a list. A fixed list rots with
+# every kernel: the one mapped on 7.1.5 knew snd_sof_amd_acp70/acp63/..., and
+# on 7.3 the platform module is snd_sof_amd_acp7x - not on the list, so it
+# stayed loaded, kept snd_sof_amd_acp busy, which kept soundwire_amd busy, which
+# kept soundwire_generic_allocation busy: three "rmmod FALHOU" per resume from a
+# single missing name, and no SoundWire master reload at all.
+#
+# Instead: take every loaded module of the ACP/SoundWire stack (pattern below,
+# codec sets included so rt711/rt722/cs35l56/... machines work too) and unload,
+# in passes, whichever ones have a zero refcount, until the set is empty or a
+# pass removes nothing. Children fall first by construction.
+is_stack_module() {
+  case "$1" in
+    snd_soc_rt[0-9]*|snd_soc_tas[0-9]*|snd_soc_cs[0-9]*|snd_soc_sdw_utils|\
+    snd_acp_sdw_*|snd_ps_sdw_dma|snd_pci_ps|snd_sof_amd_*|snd_amd_sdw_acpi|\
+    soundwire_amd|soundwire_generic_allocation) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 CODECS=()
 while read -r m; do [ -n "$m" ] && CODECS+=("$m"); done < <(
   lsmod | awk '$1 ~ /^snd_soc_(rt[0-9]+|tas[0-9]+|cs[0-9]+)/ { print $1 }'
 )
-MODS_DOWN=(snd_acp_sdw_legacy_mach snd_acp_sdw_mach ${CODECS[@]+"${CODECS[@]}"} \
-           snd_soc_rt721_sdca snd_soc_tas2783_sdw snd_ps_sdw_dma snd_pci_ps \
-           snd_sof_amd_acp70 snd_sof_amd_acp63 snd_sof_amd_vangogh \
-           snd_sof_amd_rembrandt snd_sof_amd_renoir snd_sof_amd_acp \
-           soundwire_amd soundwire_generic_allocation)
-for m in "${MODS_DOWN[@]}"; do
-  lsmod | grep -q "^$m " || continue
-  modprobe -r "$m" 2>>"$LOG" || log "rmmod $m FALHOU (segue)"
+for pass in 1 2 3 4 5 6 7 8; do
+  removed=0 left=""
+  while read -r m refs _; do
+    is_stack_module "$m" || continue
+    if [ "$refs" = 0 ]; then
+      if modprobe -r "$m" 2>>"$LOG"; then removed=$((removed+1)); else left="$left $m"; fi
+    else
+      left="$left $m($refs)"
+    fi
+  done < <(lsmod | awk 'NR>1 { print $1, $3 }')
+  [ -z "$left" ] && { log "recover: stack descarregada em $pass passe(s)"; break; }
+  [ "$removed" = 0 ] && { log "recover: rmmod estagnou no passe $pass - ficaram:$left"; break; }
 done
 sleep 2
 for m in snd_pci_ps ${CODECS[@]+"${CODECS[@]}"} snd_soc_rt721_sdca snd_soc_tas2783_sdw \

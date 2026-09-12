@@ -269,7 +269,7 @@ The fix is therefore split:
 | File (repo) | Installed to | Purpose |
 |---|---|---|
 | `50-px13-soundwire` | `/usr/lib/systemd/system-sleep/` | post hook: dispatches the recovery as a transient unit (`systemd-run --no-block --collect`) and exits immediately — the screen is back in ~3 s |
-| `px13-soundwire-recover.sh` | `/usr/local/lib/` | the actual recovery, ~30 s in the background: unbind PCI → unload the whole SoundWire/ACP module stack (children first) → reload → wait for `Attached` (probe re-downloads the amp firmware) → **always** restart the session PipeWire → reapply HiFi profile, unmute, restore default sink only if nothing better holds it |
+| `px13-soundwire-recover.sh` | `/usr/local/lib/` | the actual recovery, ~30 s in the background: unbind PCI → unload the whole SoundWire/ACP module stack (order derived from `lsmod` at run time — zero-refcount modules first, in passes — so a renamed platform module on a new kernel cannot leave part of the stack loaded, as `snd_sof_amd_acp7x` did on 7.3) → reload → wait for `Attached` (probe re-downloads the amp firmware) → **always** restart the session PipeWire → reapply HiFi profile, unmute, restore default sink only if nothing better holds it |
 | `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | the probes, shared by every script |
 | — | `/etc/px13-audio-fix.conf` | cache of the ACP PCI address and long name, written while the hardware is healthy — the recovery needs them precisely when the card has already vanished from `/proc/asound` |
 | `test-sdw-module-reload.sh` | — | interactive version of the same recovery; `sudo` it to bring audio back *right now* (plays a test sound and reports SUCCESS/FAIL) |
