@@ -153,9 +153,9 @@ about userspace reacting to a half-recovered card:
 | 7.1 (after the 7.2 rebase) | a 7.2-only source has neither the 7.1 `sdca_parse_function()` shape nor `sdw_slave_wait_for_init()` | same again, on any distro still shipping 7.1.y (Fedora 44 at the time of writing) |
 | 7.2 | the kernel started tagging the card `spk:tas2783` — while `alsa-ucm-conf` (1.2.16.1) still ships no tas2783 config | on a machine **without** this repo, worse than 7.1: UCM cannot open the card at all instead of silently skipping the Speaker device |
 | (any) | a driver swap under a live WirePlumber | the stored per-route volume can come back at **0%** — sink unmuted, HiFi active, `paplay` exits 0, and nothing comes out |
-| (any) | a **partial** module reload leaves the `rt721-sdca` jack codec stuck `suspended`, failing `pm_runtime_get` with `-61` | no speaker sink **at all**. The UCM `HiFi` verb has four mappings and the ACP requires every one of them to probe, so the broken `Headphones` mapping drops the whole profile and takes `Speaker` with it — the card is left offering only `off` and `pro-audio` |
+| 7.3-rc2 | the `rt721-sdca` jack codec runtime-suspends ~7 s after **any** probe (boot included) and never resumes — `regcache_sync()` gets `-ENODATA`, the peripheral ignores the bus although sysfs says `Attached` | no speaker sink **at all**. The UCM `HiFi` verb has four mappings and the ACP requires every one of them to probe, so the dead `Headphones` mapping drops the whole profile and takes `Speaker` with it — the card is left offering only `off` and `pro-audio`. A reboot does **not** clear it. Fixed by `90-px13-rt721-no-autosuspend.rules` (installed by `install-durable.sh`), which forbids the codec's runtime PM at device-add time so the first suspend never happens |
 | (any) | WirePlumber re-probing a profile its saved state wants but the ACP rejects | a retry loop: ~290 kernel messages/minute, the desktop's sound panel flickering, and the amp's capture port rejected on every attempt. Stopping WirePlumber drops it to 1 message per 20 s |
-| (any) | WirePlumber's `default-routes` restore writing back a stored level | `tas2783-N Speaker Volume` comes back at 153/200 — the scale is 0.5 dB/step from −100 dB, so that is **−23.5 dB**, audible as "working but quiet" with every percentage in the UI reading 100% |
+| (any) | after any amp probe, `tas2783-N Speaker Volume` reads **153/200** — the scale is 0.5 dB/step from −100 dB, so that is **−23.5 dB**. Who writes it is not pinned down: the driver's regmap paths and `tas2783_init_seq` do not touch `DVC_LVL`, its default is 200, and the firmware download bypasses the regcache | "working but quiet" with every percentage in the UI at 100%. Normally invisible: when WirePlumber manages the card, its route restore **raises** the control back to 200 on profile activation. It only shows when the card is unmanaged (a rejected profile, a static sink) — then nothing raises it. (An earlier revision of this table blamed the route restore for *lowering* it; that was backwards.) |
 
 Nothing logs an error for either of these, which is why there is a checker:
 
@@ -195,14 +195,26 @@ cat /sys/bus/soundwire/devices/sdw:0:1:025d:0721:01/power/runtime_status  # susp
 journalctl -k -b | grep 'rt721.*-61'            # pm_runtime_get failing
 ```
 
-A reboot clears it. A reload does not, if `snd_sof_amd_acp`, `soundwire_amd` or
-`soundwire_generic_allocation` refuse to unload ("is in use") — then only the
-amps re-probe, the jack codec stays wedged, and the profile stays rejected.
-Until the reboot, a static sink straight on the amp's PCM (`hw:1,2`, `S16_LE`,
-2ch, 48 kHz — check with `aplay -D hw:1,2 --dump-hw-params`) restores sound
-without the profile, and a WirePlumber rule setting `device.disabled = true` on
-`alsa_card.pci-0000_c4_00.5-platform-amd_sdw` stops the re-probe loop. Both are
-workarounds for a wedged card, not configuration this repo installs.
+`check-audio.sh` now reports this as `jack codec (rt721) alive` and names the
+fix. A reboot does **not** clear it — the codec dies ~7 s after every probe. What
+clears it is forbidding its runtime PM before that first suspend:
+
+```bash
+bash install-durable.sh        # installs 90-px13-rt721-no-autosuspend.rules
+sudo /usr/local/lib/px13-soundwire-recover.sh   # re-probes with the rule active
+```
+
+Verified on 7.3.0-rc2: with the rule, the codec stays `active` (0 ms suspended),
+no `-61`, the `HiFi` profile probes, and the Speaker sink is back through UCM.
+Cost: the jack codec stays powered. Remove the rule once its resume works
+upstream again.
+
+If you need sound *before* running that: a static sink straight on the amp's
+PCM (`hw:1,2`, `S16_LE`, 2ch, 48 kHz — check with
+`aplay -D hw:1,2 --dump-hw-params`) works without the profile, and a WirePlumber
+rule setting `device.disabled = true` on the card stops the re-probe loop. Both
+are stopgaps, not configuration this repo installs, and the static sink leaves
+`Speaker Volume` at −23.5 dB (see the table) — set it to 200 by hand.
 
 Verified on 7.2.2 by pointing `ALSA_CONFIG_UCM2` at a copy of the system tree:
 with none of this repo's files, `alsaucm -c1 list _devices/HiFi` dies with
@@ -276,6 +288,7 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 | `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.0` (DKMS) | Stock 7.2.y tas2783 driver + `Channel Playback` control, version-guarded for 7.1 and 7.3 |
 | `configs/ucm-card-override.conf.in` | `/usr/share/alsa/ucm2/conf.d/<CardDriver>/<CardLongName>.conf` — **both probed**, template placeholders substituted at install time | Forces the speaker codec; **unowned by any package** → survives `alsa-ucm-conf` updates |
 | `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | Runtime probes: card, driver, long name, amp count, ACP PCI, PipeWire names |
+| `90-px13-rt721-no-autosuspend.rules` | `/etc/udev/rules.d/` (only if an rt721 is on the bus) | Keeps the jack codec out of runtime suspend — on 7.3-rc2 it never resumes, and PipeWire drops the whole HiFi profile with it |
 | `check-audio.sh` | — | Post-update health check; non-zero exit if any invariant broke |
 | `configs/sof-soundwire_tas2783.conf` | `/usr/share/alsa/ucm2/sof-soundwire/tas2783.conf` | Speaker device for the HiFi profile; sets `tas2783-1 = Left`, `tas2783-2 = Right` on every profile activation (guarded on the **second** amp existing, so a single-amp variant still gets a mono Speaker instead of a broken profile) |
 | `configs/codecs_tas2783_init.conf` | `/usr/share/alsa/ucm2/codecs/tas2783/init.conf` | Volume-control remap (supports both driver generations) |

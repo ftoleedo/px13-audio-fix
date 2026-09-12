@@ -1,0 +1,18 @@
+# ASUS ProArt PX13 (HN7306) - keep the rt721-sdca jack codec out of runtime suspend.
+#
+# On kernel 7.3.0-rc2 the codec runtime-suspends ~7 s after probe and never
+# comes back: rt721_sdca_dev_resume() -> regcache_sync() fails with -ENODATA,
+# i.e. the peripheral ignores the bus writes although sysfs still says
+# "Attached". Every later pm_runtime_get() fails the same way, so the
+# SDW1-PIN0-PLAYBACK-SimpleJack PCM cannot open. PipeWire's ACP needs every
+# mapping of the UCM HiFi verb to probe, so the dead Headphones mapping drops
+# the whole profile and takes the internal Speaker down with it - the card is
+# left offering only 'off' and 'pro-audio', with no speaker sink at all.
+#
+# Forbidding runtime PM at device-add time means the first suspend never
+# happens, so the broken resume path is never taken. Cost: the jack codec stays
+# powered (milliwatts). Remove once the resume works upstream again.
+#
+# Install: /etc/udev/rules.d/90-px13-rt721-no-autosuspend.rules, then
+#   udevadm control --reload && udevadm trigger -s soundwire
+ACTION=="add", SUBSYSTEM=="soundwire", KERNEL=="sdw:*:025d:0721:*", ATTR{power/control}="on"

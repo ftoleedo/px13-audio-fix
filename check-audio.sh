@@ -40,6 +40,26 @@ if command -v dkms >/dev/null 2>&1; then
            Usually the driver API moved upstream; see /var/lib/dkms/snd-soc-tas2783-sdw-px13/1.0/build/make.log"
 fi
 
+# 1b. the jack codec must not be stuck in runtime suspend ----------------------
+# PipeWire's ACP probes every mapping of the UCM HiFi verb and drops the whole
+# profile if one fails. On 7.3.0-rc2 the rt721-sdca jack codec runtime-suspends
+# ~7 s after probe and never resumes (-ENODATA), which removes the Speaker sink
+# too - while every other check here still passes. Not an amp problem.
+for RT in /sys/bus/soundwire/devices/sdw:*:025d:0721:*; do
+  [ -e "$RT/power/runtime_status" ] || continue
+  RTS="$(cat "$RT/power/runtime_status")"; RTC="$(cat "$RT/power/control")"
+  if [ "$RTS" = suspended ] && journalctl -k -b --no-pager 2>/dev/null | grep -q 'rt721.*(-61)'; then
+    bad "jack codec (rt721) alive" "runtime-suspended and failing to resume (-61 in dmesg).
+           The HiFi profile will be rejected and the speaker sink with it.
+           Fix: bash install-durable.sh (installs the udev rule that forbids its
+           runtime suspend), then: sudo /usr/local/lib/px13-soundwire-recover.sh"
+  elif [ "$RTC" != on ]; then
+    warn "jack codec (rt721) runtime PM is '$RTC' - on 7.3.0-rc2 it dies at the first suspend; install-durable.sh sets it to 'on'"
+  else
+    ok "jack codec (rt721) alive (runtime $RTS, control on)"
+  fi
+done
+
 # 2. the per-amp channel control ---------------------------------------------
 AMPS="$(px13_amp_count "$CARD")"
 CH="$(amixer -D "hw:$CARD" controls 2>/dev/null | grep -c 'Channel Playback')"
