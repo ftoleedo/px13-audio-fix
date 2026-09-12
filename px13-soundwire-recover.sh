@@ -193,7 +193,7 @@ sleep 2
 is_bound || { echo "$PCI" > "$DRV/bind" 2>>"$LOG"; log "bind manual pos-reload"; }
 
 # wait for enumeration/attach (up to 20 s)
-for i in $(seq 1 40); do sleep 0.5; px13_sdw_all_attached && break; done
+for _ in $(seq 1 40); do sleep 0.5; px13_sdw_all_attached && break; done
 log "recover pos-reload:$(px13_sdw_status_str)"
 px13_sdw_all_attached || log "recover: codecs seguem fora - audio interno indisponivel (reboot); BT/HDMI liberados pelo restart abaixo"
 

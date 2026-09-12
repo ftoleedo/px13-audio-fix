@@ -75,6 +75,14 @@ fi
 [ "$TESTED" -ge 2 ] || skip "only $TESTED kernel(s) available - install headers for another series"
 
 # 2. the shell scripts still parse -------------------------------------------
+# Known gap: this catches syntax and what shellcheck sees, NOT set -e logic.
+# PR #2 (2026-09-12) was `[ -n "$x" ] && cmd` as the last line of a { } group
+# feeding a pipeline under pipefail - status 1 when $x is empty, so set -e
+# killed install-durable.sh at step 2/8 on every fresh install, silently.
+# bash -n and shellcheck were both green. Only a real install on a clean
+# system catches that class; until there is one, review { } | pipelines by
+# hand.
+PATH="$HOME/.local/bin:$PATH"
 for s in ./*.sh lib/*.sh; do
   bash -n "$s" || { red "syntax: $s"; continue; }
 done
