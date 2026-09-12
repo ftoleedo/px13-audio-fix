@@ -2,7 +2,7 @@
 # (postar como resposta ao @weskoop / @simiscoool-afk; revisar antes)
 # v2 2026-09-12: resume sem interrupção (driver 7.3 + restore do canal)
 
-@simiscoool-afk status as of this week, tested on `linux-cachyos-rc 7.3.0-rc2` on a PX13 HN7306EAC:
+@simiscoool-afk status as of this week, tested on `linux-cachyos-rc 7.3.0-rc2` on a PX13 HN7306EAC — and, as of today, confirmed on a second machine: @jfsicilia reports speakers, mic and Bluetooth audio working with no sleep/resume issues on the same kernel after `install-durable.sh` + `install-resume-recovery.sh` (he also caught and fixed an install-script bug of mine on the way, PR #2 — thanks).
 
 @weskoop both things you saw on 7.3-rc1 are reproducible, and both have a cause and a fix now. Neither is the amp driver.
 
@@ -36,4 +36,4 @@ bash install-resume-recovery.sh    # the sleep hook
 bash check-audio.sh                # after every kernel update
 ```
 
-@weskoop if you get to it this weekend, `bash check-audio.sh` on rc1/rc2 should tell you in one line whether you are hitting the rt721 case — I'd be glad to know it reproduces on a second machine.
+@weskoop if you get to it this weekend, `bash check-audio.sh` on rc1/rc2 should tell you in one line whether you are hitting the rt721 case.
