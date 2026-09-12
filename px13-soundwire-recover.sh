@@ -42,8 +42,16 @@ fi
 # shellcheck source=lib/px13-detect.sh
 . "$DETECT"
 
-# give the resume time to finish and the session to thaw before touching anything
-sleep 2
+# Let the resume FINISH before tearing anything down. This is not politeness:
+# unbinding the ACP 2 s after "PM: suspend exit" races the driver's own resume
+# teardown. @leepaulmann hit it 1 resume in 10 on 7.1.9-arch1-2 (2026-09-05):
+# NULL pointer dereference in release_resource() with the global resource_lock
+# held for write, so every later amdgpu page fault spun on that lock - desktop
+# frozen solid, only a power cycle cleared it. modprobe -r takes the same
+# pci_device_remove path, so the lever is WHEN the teardown starts, not how.
+# Healthy resumes finish SoundWire re-enumeration around t+7 s; 10 s leaves
+# margin. Tunable for testing via PX13_RESUME_SETTLE.
+sleep "${PX13_RESUME_SETTLE:-10}"
 
 PCI="$(px13_acp_pci)" || PCI=""
 if [ -z "$PCI" ]; then
