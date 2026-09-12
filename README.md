@@ -172,6 +172,9 @@ about userspace reacting to a half-recovered card:
 | (any) | WirePlumber re-probing a profile its saved state wants but the ACP rejects | a retry loop: ~290 kernel messages/minute, the desktop's sound panel flickering, and the amp's capture port rejected on every attempt. Stopping WirePlumber drops it to 1 message per 20 s |
 | (any) | after any amp probe, `tas2783-N Speaker Volume` reads **153/200** — the scale is 0.5 dB/step from −100 dB, so that is **−23.5 dB**. Who writes it is not pinned down: the driver's regmap paths and `tas2783_init_seq` do not touch `DVC_LVL`, its default is 200, and the firmware download bypasses the regcache | "working but quiet" with every percentage in the UI at 100%. Normally invisible: when WirePlumber manages the card, its route restore **raises** the control back to 200 on profile activation. It only shows when the card is unmanaged (a rejected profile, a static sink) — then nothing raises it. (An earlier revision of this table blamed the route restore for *lowering* it; that was backwards.) |
 
+| (any) | a PipeWire restart (the recovery does one, so did every debugging session here) while a browser is open | Chromium/Brave/Electron keep their audio-service connection and never re-enumerate: playback still works, but WhatsApp Web, Meet & co. say **"microphone not found"** until the browser is restarted (`brave://restart`). Not a PipeWire or driver problem |
+| (any) | the internal DMIC at 100% | speech lands around **−38 dBFS** — the ACP DMIC has no capture gain control and is simply quiet — which voice-activity detectors treat as silence. `install-durable.sh` raises the `Mic` source to 170% (+13.8 dB); a headset in `a2dp-sink` has **no** microphone at all (that is the profile, switch to `headset-head-unit` for its mic) |
+
 Nothing logs an error for either of these, which is why there is a checker:
 
 ```bash

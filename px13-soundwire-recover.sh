@@ -212,7 +212,8 @@ if [ -S "$RT/bus" ]; then
       # only take the default if nobody better holds it (never steal from BT)
       DEF="$(ru pactl get-default-sink 2>/dev/null)"
       case "${DEF:-}" in ""|auto_null) ru pactl set-default-sink "$SINK" ;; esac
-      log "recover: SUCESSO - pipewire reiniciado, HiFi/speaker de volta (card=${CARD:-?} sink=$SINK default=${DEF:-vazio})"
+      log "recover: AVISO - browsers ja abertos (Brave/Chromium/Electron) nao reenumeram microfones apos o restart do pipewire: sites dirao 'microfone nao encontrado' ate reiniciar o browser (brave://restart)"
+    log "recover: SUCESSO - pipewire reiniciado, HiFi/speaker de volta (card=${CARD:-?} sink=$SINK default=${DEF:-vazio})"
     else
       log "recover: bus OK mas nenhum sink SoundWire no pipewire"
     fi
