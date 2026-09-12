@@ -40,6 +40,17 @@ if command -v dkms >/dev/null 2>&1; then
            Usually the driver API moved upstream; see /var/lib/dkms/snd-soc-tas2783-sdw-px13/<version>/build/make.log"
 fi
 
+# 1a. what is on disk must be what is in memory ---------------------------------
+# A fresh DKMS build sits in updates/ while the previous module keeps running
+# until a reload or reboot. When both carry the Channel Playback control every
+# other check here passes, so say it explicitly.
+MEM="$(cat /sys/module/snd_soc_tas2783_sdw/srcversion 2>/dev/null)"
+DISK="$(modinfo -k "$(uname -r)" snd_soc_tas2783_sdw -F srcversion 2>/dev/null)"
+if [ -n "$MEM" ] && [ -n "$DISK" ] && [ "$MEM" != "$DISK" ]; then
+  warn "module in memory ($MEM) is not the one on disk ($DISK) - a newer build is installed but not loaded.
+           Reboot, or: sudo /usr/local/lib/px13-soundwire-recover.sh"
+fi
+
 # 1b. the jack codec must not be stuck in runtime suspend ----------------------
 # PipeWire's ACP probes every mapping of the UCM HiFi verb and drops the whole
 # profile if one fails. On 7.3.0-rc2 the rt721-sdca jack codec runtime-suspends
