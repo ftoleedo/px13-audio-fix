@@ -37,7 +37,7 @@ if command -v dkms >/dev/null 2>&1; then
   DK="$(dkms status snd-soc-tas2783-sdw-px13 2>/dev/null | grep -c "$(uname -r).*installed")"
   [ "${DK:-0}" -ge 1 ] && ok "DKMS built for this kernel" \
     || bad "DKMS built for this kernel" "dkms status shows no 'installed' line for $(uname -r).
-           Usually the driver API moved upstream; see /var/lib/dkms/snd-soc-tas2783-sdw-px13/1.0/build/make.log"
+           Usually the driver API moved upstream; see /var/lib/dkms/snd-soc-tas2783-sdw-px13/<version>/build/make.log"
 fi
 
 # 1b. the jack codec must not be stuck in runtime suspend ----------------------

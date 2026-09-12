@@ -4,9 +4,12 @@ Working **stereo** on the internal speakers of the ASUS ProArt PX13 (HN7306*,
 AMD Strix Halo) — on a **stock kernel ≥ 7.1**, surviving kernel and
 alsa-ucm-conf updates.
 
-**Kernel 7.1 / 7.2 / 7.3 users:** one module source now builds on all three
-(`LINUX_VERSION_CODE` guards cover the two SoundWire/SDCA calls that changed
-shape). If an earlier checkout left you with a failed DKMS build and the
+**Kernel 7.1 / 7.2 / 7.3 users:** one module source builds on all three — the
+two SoundWire/SDCA calls that changed shape are probed from the target
+kernel's headers at build time, not guessed from the version. The module is now
+based on the **7.3** driver, so the s2idle resume fixes that landed upstream in
+7.3 come with it on every kernel (until now the DKMS module was replacing the
+in-tree 7.3 driver with a 7.2 one *without* them). If an earlier checkout left you with a failed DKMS build and the
 *stock* driver silently taking over (stereo gone), pull and re-run
 `bash install-durable.sh`, then `bash check-audio.sh`. Details in
 [Kernel updates](#kernel-updates-what-breaks-and-how-to-tell).
@@ -240,9 +243,13 @@ The proper upstream fix for this half now belongs in **alsa-ucm-conf**, not the
 kernel: a `sof-soundwire/tas2783.conf` and `codecs/tas2783/` upstream would
 retire two of the three files here.
 
-The module now carries `LINUX_VERSION_CODE` guards on that call and on the
-resume wait (a copy of 7.2's `sdw_slave_wait_for_init()` inline for 7.1), and
-builds clean on 7.1.12, 7.1.13, 7.2.3 and 7.3.0-rc1. Upstream 7.2 also absorbed two of the three local
+The module is now based on the 7.3 driver. The two calls that differ on older
+kernels — `sdca_parse_function()` and the resume wait — are handled by
+build-time probes of the target kernel's headers (`module/Makefile`), because
+`LINUX_VERSION_CODE` is not a reliable guide: @leepaulmann found Arch
+7.1.9-arch1-2 carrying a different `sdca_parse_function()` than CachyOS 7.1.x
+under the same version code. It builds clean on 7.1.13, 7.2.4 and 7.3.0-rc2
+(the `.gate` proves all three). Upstream 7.2 also absorbed two of the three local
 patches (the `tas25xx_*_misc` stubs and the `0x` firmware-name prefix, which
 upstream implemented better, with a fallback), so **the entire local delta is
 now the single `Channel Playback` control** — 31 lines over stock.
@@ -297,7 +304,7 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 
 | File (repo) | Installed to | Purpose |
 |---|---|---|
-| `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.0` (DKMS) | Stock 7.2.y tas2783 driver + `Channel Playback` control, version-guarded for 7.1 and 7.3 |
+| `module/` | `/usr/src/snd-soc-tas2783-sdw-px13-1.1` (DKMS) | Stock 7.3 tas2783 driver (with its s2idle resume fixes) + `Channel Playback` control; the two calls that differ on 7.1/7.2 are probed from the target kernel's headers at build time |
 | `configs/ucm-card-override.conf.in` | `/usr/share/alsa/ucm2/conf.d/<CardDriver>/<CardLongName>.conf` — **both probed**, template placeholders substituted at install time | Forces the speaker codec; **unowned by any package** → survives `alsa-ucm-conf` updates |
 | `lib/px13-detect.sh` | `/usr/local/lib/px13-audio-detect.sh` | Runtime probes: card, driver, long name, amp count, ACP PCI, PipeWire names |
 | `90-px13-rt721-no-autosuspend.rules` | `/etc/udev/rules.d/` (only if an rt721 is on the bus) | Keeps the jack codec out of runtime suspend — on 7.3-rc2 it never resumes, and PipeWire drops the whole HiFi profile with it |
@@ -310,10 +317,12 @@ Everything is logged to `/var/log/px13-soundwire-resume.log`.
 
 ### The kernel-side patch (module/)
 
-The DKMS module is the stock `linux-7.2.y` `tas2783-sdw.c` with one functional
-addition — nealstar's channel-selection control rebased onto the upstream
-driver (plus `LINUX_VERSION_CODE` guards for 7.1 and 7.3, where two of the
-APIs it uses differ):
+The DKMS module is the stock **7.3** `tas2783-sdw.c` — which carries Andrey
+Golovko's three s2idle resume fixes (drop the stale regcache on re-attach,
+power the Function up before preparing the port, `writeable_reg` so a cache
+sync does not try to write read-only SDCA controls) — with one functional
+addition, nealstar's channel-selection control rebased onto it, plus two
+build-time-probed shims for the calls that differ on 7.1/7.2:
 
 ```
 tas2783-N Channel Playback : enum { Off, Left, Right }
@@ -358,7 +367,7 @@ If the sides are physically swapped, exchange the two `cset` values in
 - **Mono / one speaker only, right after a kernel update** — the DKMS build
   failed and the stock module took over. `bash check-audio.sh` says so in one
   line; `dkms status` and
-  `/var/lib/dkms/snd-soc-tas2783-sdw-px13/1.0/build/make.log` say why. If the
+  `/var/lib/dkms/snd-soc-tas2783-sdw-px13/<version>/build/make.log` say why. If the
   driver API moved again, the module source needs a rebase (see
   [Kernel updates](#kernel-updates-what-breaks-and-how-to-tell)); otherwise
   `bash install-durable.sh` is enough. Without dkms: `cd module && make` then

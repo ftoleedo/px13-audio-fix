@@ -21,7 +21,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 UCM="${UCM_DIR:-/usr/share/alsa/ucm2}"
 DKMS_NAME=snd-soc-tas2783-sdw-px13
-DKMS_VER=1.0
+DKMS_VER=1.1
 KREL="$(uname -r)"
 MARKER="px13-audio-fix"
 
@@ -67,6 +67,13 @@ echo "==> 1/8 Kernel module with the 'Channel Playback' control (needs root)"
 if command -v dkms >/dev/null 2>&1; then
   # drop an older manual install so it does not compete with the dkms one
   root_run rm -f "/usr/lib/modules/$KREL/updates/snd-soc-tas2783-sdw.ko"
+  # and retire other versions of this package: two versions both land in
+  # updates/dkms/ and depmod would pick one of them arbitrarily
+  for old in $(dkms status 2>/dev/null | sed -n "s|^$DKMS_NAME/\([^,]*\),.*|\1|p" | sort -u); do
+    [ "$old" = "$DKMS_VER" ] && continue
+    root_run dkms remove "$DKMS_NAME/$old" --all && echo "    retired $DKMS_NAME/$old"
+    root_run rm -rf "/usr/src/$DKMS_NAME-$old"
+  done
   root_run mkdir -p "/usr/src/$DKMS_NAME-$DKMS_VER"
   root_run cp -f "$REPO/module/tas2783-sdw.c" "$REPO/module/tas2783.h" \
                  "$REPO/module/Makefile" "$REPO/module/dkms.conf" \
