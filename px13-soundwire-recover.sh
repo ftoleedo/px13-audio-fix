@@ -69,8 +69,14 @@ ru() { runuser -u "$UNAME" -- env XDG_RUNTIME_DIR="$RT" DBUS_SESSION_BUS_ADDRESS
 # restarting PipeWire afterwards; do not rely on that.
 release_card() {
   if [ -S "$RT/bus" ]; then
-    ru systemctl --user stop wireplumber pipewire pipewire-pulse
-    log "recover: pipewire parado antes do reload (libera o card)"
+    # Stop the SOCKETS first. PipeWire is socket-activated: with pipewire.socket
+    # still armed, anything touching it relaunches the service inside the sleep
+    # below, systemd logs "Job for pipewire.service canceled", /dev/snd is held
+    # again, and this function aborts the reload it was supposed to enable -
+    # which is how every resume on 2026-09-11 left one amp without firmware.
+    ru systemctl --user stop pipewire.socket pipewire-pulse.socket
+    ru systemctl --user stop wireplumber.service pipewire-pulse.service pipewire.service
+    log "recover: pipewire (sockets + servicos) parado antes do reload (libera o card)"
     sleep 2
   fi
   # fuser prints the PIDs on stdout and the file name on stderr
@@ -94,7 +100,9 @@ is_bound && px13_sdw_all_attached &&
 # --- full module reload (order mapped with lsmod, kernel 7.1.5) -------------
 if ! release_card; then
   log "recover: ABORTANDO o reload - o card segue em uso e o rmmod travaria o kernel"
-  [ -S "$RT/bus" ] && ru systemctl --user start wireplumber pipewire pipewire-pulse
+  [ -S "$RT/bus" ] && ru systemctl --user start pipewire.socket pipewire-pulse.socket \
+                                                  pipewire.service pipewire-pulse.service \
+                                                  wireplumber.service
   exit 1
 fi
 [ -e "/sys/bus/pci/devices/$PCI/driver" ] && { echo "$PCI" > "$DRV/unbind" 2>>"$LOG"; sleep 1; }
@@ -130,7 +138,8 @@ px13_sdw_all_attached || log "recover: codecs seguem fora - audio interno indisp
 # ALWAYS restart the session's PipeWire: a vanished SoundWire card leaves the
 # WirePlumber graph wedged and takes Bluetooth audio down with it
 if [ -S "$RT/bus" ]; then
-  ru systemctl --user restart wireplumber pipewire pipewire-pulse
+  ru systemctl --user start pipewire.socket pipewire-pulse.socket
+  ru systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
   sleep 4
   if px13_sdw_all_attached; then
     CARD="$(px13_pw_card_as ru)"
