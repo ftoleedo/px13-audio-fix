@@ -142,7 +142,9 @@ non-GOPRO HN7306EA-LX005X too) and confirmed by **@DevGrishin**, in
 ## Kernel updates: what breaks, and how to tell
 
 The DKMS module is a copy of the upstream driver plus one control, so it rides
-on an API that moves. Twice now an update has degraded the audio **silently**:
+on an API that moves. Several times now an update has degraded the audio
+**silently** — and the last three rows are not about the module at all, but
+about userspace reacting to a half-recovered card:
 
 | Kernel | What changed | What you saw |
 |---|---|---|
@@ -151,6 +153,9 @@ on an API that moves. Twice now an update has degraded the audio **silently**:
 | 7.1 (after the 7.2 rebase) | a 7.2-only source has neither the 7.1 `sdca_parse_function()` shape nor `sdw_slave_wait_for_init()` | same again, on any distro still shipping 7.1.y (Fedora 44 at the time of writing) |
 | 7.2 | the kernel started tagging the card `spk:tas2783` — while `alsa-ucm-conf` (1.2.16.1) still ships no tas2783 config | on a machine **without** this repo, worse than 7.1: UCM cannot open the card at all instead of silently skipping the Speaker device |
 | (any) | a driver swap under a live WirePlumber | the stored per-route volume can come back at **0%** — sink unmuted, HiFi active, `paplay` exits 0, and nothing comes out |
+| (any) | a **partial** module reload leaves the `rt721-sdca` jack codec stuck `suspended`, failing `pm_runtime_get` with `-61` | no speaker sink **at all**. The UCM `HiFi` verb has four mappings and the ACP requires every one of them to probe, so the broken `Headphones` mapping drops the whole profile and takes `Speaker` with it — the card is left offering only `off` and `pro-audio` |
+| (any) | WirePlumber re-probing a profile its saved state wants but the ACP rejects | a retry loop: ~290 kernel messages/minute, the desktop's sound panel flickering, and the amp's capture port rejected on every attempt. Stopping WirePlumber drops it to 1 message per 20 s |
+| (any) | WirePlumber's `default-routes` restore writing back a stored level | `tas2783-N Speaker Volume` comes back at 153/200 — the scale is 0.5 dB/step from −100 dB, so that is **−23.5 dB**, audible as "working but quiet" with every percentage in the UI reading 100% |
 
 Nothing logs an error for either of these, which is why there is a checker:
 
@@ -178,6 +183,26 @@ One kernel proves nothing about API drift, so it warns when fewer than two are
 available. Both regressions above would have been caught by it: install headers
 for a second series (or extract a distro `kernel-devel` and point
 `PX13_EXTRA_KDIRS` at it) before releasing a module change.
+
+### When there is no sink at all
+
+`check-audio.sh` reporting a healthy module, healthy DKMS, correct channels and
+a working UCM **but no speaker sink** is the `rt721-sdca` failure above, not an
+amp problem. Confirm it in two commands:
+
+```bash
+cat /sys/bus/soundwire/devices/sdw:0:1:025d:0721:01/power/runtime_status  # suspended
+journalctl -k -b | grep 'rt721.*-61'            # pm_runtime_get failing
+```
+
+A reboot clears it. A reload does not, if `snd_sof_amd_acp`, `soundwire_amd` or
+`soundwire_generic_allocation` refuse to unload ("is in use") — then only the
+amps re-probe, the jack codec stays wedged, and the profile stays rejected.
+Until the reboot, a static sink straight on the amp's PCM (`hw:1,2`, `S16_LE`,
+2ch, 48 kHz — check with `aplay -D hw:1,2 --dump-hw-params`) restores sound
+without the profile, and a WirePlumber rule setting `device.disabled = true` on
+`alsa_card.pci-0000_c4_00.5-platform-amd_sdw` stops the re-probe loop. Both are
+workarounds for a wedged card, not configuration this repo installs.
 
 Verified on 7.2.2 by pointing `ALSA_CONFIG_UCM2` at a copy of the system tree:
 with none of this repo's files, `alsaucm -c1 list _devices/HiFi` dies with
