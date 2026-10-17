@@ -195,6 +195,56 @@ is_bound || { echo "$PCI" > "$DRV/bind" 2>>"$LOG"; log "bind manual pos-reload";
 # wait for enumeration/attach (up to 20 s)
 for _ in $(seq 1 40); do sleep 0.5; px13_sdw_all_attached && break; done
 log "recover pos-reload:$(px13_sdw_status_str)"
+
+# --- Last resort: PCI hot-remove + rescan -----------------------------------
+# There is a resume failure one layer below this script's reach: the ACP70
+# SoundWire MASTER never retrains the link after s2idle (LKML, 2026-07-20,
+# "SoundWire: amd: all peripherals stay UNATTACHED after s2idle resume").
+# All slaves - rt721 included - fail with acpi_subsys_resume -110 and stay
+# UNATTACHED; a driver unbind/bind and the full module reload above both
+# re-probe on top of the SAME PCI/ACPI enumeration, so the link never
+# retrains and the codecs stay off the bus. Reported as "only a cold reboot
+# recovers" (also by this script until now).
+#
+# Verified on 7.1.4-070104 (issue #4): while the card is RELEASED (we stopped
+# the session's PipeWire above and have not restarted it yet), removing the
+# PCI device outright and rescanning forces a fresh ACPI/PCI enumeration +
+# link retraining - the thing no driver-level re-init can do - and all three
+# slaves come back Attached in ~20 s, amp firmware re-downloaded by the fresh
+# probe. Key distinction: /sys/bus/pci/drivers/.../unbind keeps the device
+# enumerated (does NOT help); devices/.../remove + bus/rescan does.
+# Remove+rescan while userspace still holds the card silently no-ops or
+# hangs - hence this runs strictly after release_card().
+# Opt out with PX13_PCI_RESCAN=0 if you prefer the reboot answer.
+if ! px13_sdw_all_attached && [ "${PX13_PCI_RESCAN:-1}" != "0" ]; then
+  log "recover: reload nao bastou - escalando para PCI remove+rescan (issue #4)"
+  timeout 30 sh -c "echo 1 > /sys/bus/pci/devices/$PCI/remove" 2>>"$LOG" \
+    || log "recover: pci remove falhou/estourou o tempo"
+  sleep 3
+  timeout 30 sh -c "echo 1 > /sys/bus/pci/rescan" 2>>"$LOG" \
+    || log "recover: pci rescan falhou/estourou o tempo"
+  # Pin power/control=on (fresh probe resets it to auto). Do it both before
+  # the wait - cheap, catches a fast probe - and AFTER it, because a probe
+  # landing mid-wait overwrites the early write. The rt721 udev rule re-pins
+  # the codec itself on its add event.
+  pin_power() {
+    echo on > "/sys/bus/pci/devices/$PCI/power/control" 2>/dev/null || true
+    local d
+    for d in /sys/bus/soundwire/devices/sdw:*/power/control; do
+      echo on > "$d" 2>/dev/null || true
+    done
+  }
+  pin_power
+  for _ in $(seq 1 30); do sleep 1; px13_sdw_all_attached && break; done
+  pin_power
+  if px13_sdw_all_attached; then
+    log "recover: remove+rescan recuperou os perifericos - reboot nao foi necessario"
+  else
+    log "recover: perifericos seguem UNATTACHED mesmo apos remove+rescan; este ai precisa de boot a frio"
+  fi
+  log "recover pos-escalacao:$(px13_sdw_status_str)"
+fi
+
 px13_sdw_all_attached || log "recover: codecs seguem fora - audio interno indisponivel (reboot); BT/HDMI liberados pelo restart abaixo"
 
 # ALWAYS restart the session's PipeWire: a vanished SoundWire card leaves the
