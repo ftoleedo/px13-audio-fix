@@ -16,6 +16,11 @@ module/.module-common.o
 
 # working material (not repo content)
 DRAFT-github-comment-737.md
+DRAFT-reply-zoom-headphones.md
+# agent context file: points at this machine's memory dirs, never published
+AGENTS.md
 
 # vendor Windows driver blob (kept locally, never committed)
 *.exe
+
+__pycache__/
