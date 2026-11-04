@@ -45,7 +45,7 @@ CARD="$(px13_find_card)" || fail "no SoundWire ALSA card found.
 DRIVER="$(px13_card_driver "$CARD")" || fail "could not read the ALSA driver name of card $CARD"
 LONG="$(px13_card_longname "$CARD")" || fail "could not read the CardLongName of card $CARD.
     UCM keys its override file on that exact string; without it nothing can be installed."
-COMPONENTS="$(px13_card_components "$CARD")"
+COMPONENTS="$(px13_card_components "$CARD" || true)"
 
 printf '    card index    : %s\n'   "$CARD"
 printf '    ALSA driver   : %s\n'   "$DRIVER"
@@ -197,8 +197,14 @@ sleep 2
 echo "==> 6/8 State (expected: Attached, channels 1/2, Speaker sink)"
 echo "    soundwire:$(px13_sdw_status_str)"
 AMPS="$(px13_amp_count "$CARD")"
+# "Channel Playback" exists only once the patched module from step 1 is
+# loaded. When step 3 could not reload it live, the old module is still
+# running until the reboot, cget exits 1, and under `set -euo pipefail` that
+# silently killed the installer right after the soundwire line. Display only.
 for n in $(seq 1 "${AMPS:-0}"); do
-  amixer -D "hw:$CARD" cget name="tas2783-$n Channel Playback" 2>/dev/null | tail -1 | sed "s/^/    tas2783-$n:/"
+  v="$(amixer -D "hw:$CARD" cget name="tas2783-$n Channel Playback" 2>/dev/null | tail -1)" \
+    || v=" (no Channel Playback control yet - patched module not loaded, reboot)"
+  echo "    tas2783-$n:$v"
 done
 [ "${AMPS:-0}" -lt 2 ] && echo "    note: only $AMPS amp(s) with controls - stereo assignment skipped"
 asuser wpctl status 2>/dev/null | sed -n '/Sinks:/,/Sources:/p' | sed 's/^/    /' || true
