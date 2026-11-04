@@ -126,7 +126,7 @@ px13_card_driver() {
 px13_card_longname() {
 	[ -n "${PX13_LONGNAME:-}" ] && { echo "$PX13_LONGNAME"; return 0; }
 	local ln
-	ln="$(amixer -c "$1" info 2>/dev/null | awk -F"'" '/^Card /{print $4; exit}')"
+	ln="$({ amixer -D "hw:$1" info 2>/dev/null || true; } | awk -F"'" '/^Card /{print $4; exit}')"
 	[ -n "$ln" ] || ln="$(px13_card_field "$1" 3)"
 	[ -n "$ln" ] || return 1
 	echo "$ln"
@@ -134,8 +134,15 @@ px13_card_longname() {
 
 # " cfg-amp:2 mic:acp-dmic cfg-mics:1 hs:rt721"  — what UCM matches its regexes
 # against. The missing " spk:tas2783" here is bug #1 of the README.
+#
+# Uses "-D hw:N" (see the note above px13_amp_count): with a UCM ctl-remap
+# installed (the old asus-proart-px13-quirks init.conf), "amixer -c N info"
+# prints the header and then exits 1 with "Mixer load sysdefault:N error".
+# Under the callers' `set -o pipefail` that killed install-durable.sh at
+# step 0 with no message (issue #3). The status is ignored as well - an
+# empty result is the only failure that matters.
 px13_card_components() {
-	amixer -c "$1" info 2>/dev/null |
+	{ amixer -D "hw:$1" info 2>/dev/null || true; } |
 		sed -n "s/^[[:space:]]*Components[[:space:]]*:[[:space:]]*'\(.*\)'\$/\1/p"
 }
 

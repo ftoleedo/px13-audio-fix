@@ -95,12 +95,24 @@ fi
 
 echo ""
 echo "==> Setting channel mapping (tas2783-1=Left, tas2783-2=Right)..."
-amixer -c"$CARD" cset name='tas2783-1 Channel Playback' Left  > /dev/null
-amixer -c"$CARD" cset name='tas2783-2 Channel Playback' Right > /dev/null
-amixer -c"$CARD" cset name='tas2783-1 Amp Playback Switch' on     > /dev/null
-amixer -c"$CARD" cset name='tas2783-1 Speaker Playback Switch' on > /dev/null
-amixer -c"$CARD" cset name='tas2783-2 Amp Playback Switch' on     > /dev/null
-amixer -c"$CARD" cset name='tas2783-2 Speaker Playback Switch' on > /dev/null
+# These controls exist only with the patched tas2783 module loaded; the
+# stock one exposes just "Amp Volume"/"Speaker Volume". Under `set -e` an
+# unguarded cset on a missing control killed the script here, so set each
+# control only when the card has it.
+CONTROLS="$(amixer -c"$CARD" controls 2>/dev/null || true)"
+set_if_present() {
+    if printf '%s\n' "$CONTROLS" | grep -qF "name='$1'"; then
+        amixer -c"$CARD" cset name="$1" "$2" > /dev/null || echo "  WARN: setting '$1' failed"
+    else
+        echo "  skip: no '$1' control (patched module not loaded?)"
+    fi
+}
+set_if_present 'tas2783-1 Channel Playback' Left
+set_if_present 'tas2783-2 Channel Playback' Right
+set_if_present 'tas2783-1 Amp Playback Switch' on
+set_if_present 'tas2783-1 Speaker Playback Switch' on
+set_if_present 'tas2783-2 Amp Playback Switch' on
+set_if_present 'tas2783-2 Speaker Playback Switch' on
 
 echo ""
 echo "==> Persisting ALSA state (channels, switches, volumes)..."
