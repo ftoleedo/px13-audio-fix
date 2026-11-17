@@ -14,16 +14,23 @@ in-tree 7.3 driver with a 7.2 one *without* them). If an earlier checkout left y
 `bash install-durable.sh`, then `bash check-audio.sh`. Details in
 [Kernel updates](#kernel-updates-what-breaks-and-how-to-tell).
 
+**Kernel 7.4 users: skip 7.4-rc2.** It has an upstream ASoC regression that
+oopses while the sound card is being assembled — no card at all, boot waits on
+udev, **shutdown hangs** — with or without this repo. Fixed upstream in
+**7.4-rc3**, where the module from this repo works unchanged. Per-kernel status
+and workarounds: [Kernel support matrix](#kernel-support-matrix).
+
 **Every SKU.** Nothing is hardcoded to one machine: the ALSA card index, the
 card long name, the ACP PCI address and the PipeWire node names are all probed
 at install time (`lib/px13-detect.sh`), and the installer now **fails loudly**
 instead of exiting 0 without sound. See
 [SKU independence](#sku-independence-why-it-used-to-break-on-other-px13s).
 
-Tested on CachyOS `linux-cachyos` 7.1.3, 7.1.8 and 7.2.2 and Fedora 44
-7.1.12 (HN7306EAC) and reported working on HN7306EA / HN7306EA-LX005X. The
-module compiles clean against Fedora's 7.1.12, 7.1.13, 7.2.3 and 7.3.0-rc1
-kernel-devel trees. Should work on Arch, Fedora and other distros with minor path
+Tested on CachyOS `linux-cachyos` 7.1.3, 7.1.8, 7.2.2 and 7.3.0-rc2,
+`linux-cachyos-rc` 7.4.0-rc3, and Fedora 44 7.1.12 (HN7306EAC), and reported
+working on HN7306EA / HN7306EA-LX005X. The module compiles clean against
+Fedora's 7.1.12, 7.1.13, 7.2.3 and 7.3.0-rc1 kernel-devel trees and against
+CachyOS 7.3.4 and 7.4.0-rc3. Should work on Arch, Fedora and other distros with minor path
 adjustments — the build follows whatever toolchain the target kernel was built
 with (clang on CachyOS, gcc on Arch stock and Fedora), so no manual `LLVM=1`.
 
@@ -154,6 +161,28 @@ non-GOPRO HN7306EA-LX005X too) and confirmed by **@DevGrishin**, in
 
 ---
 
+## Kernel support matrix
+
+What each kernel series needs on the PX13, and what to do when it misbehaves.
+"Verified" means `check-audio.sh` passed on the real machine; "builds" means
+the `.gate` compiled the module against that header tree.
+
+| Kernel | Status | What you need / workaround |
+|---|---|---|
+| < 7.1 | stock tas2783 driver not usable | patched kernel (nealstar's series, kept in [`patches/`](patches/)); nothing else in this repo applies |
+| 7.1.y | verified (7.1.3, 7.1.8, Fedora 7.1.12) | UCM files + long-name override + DKMS module. The module probes the 7.1 shape of `sdca_parse_function()` at build time |
+| 7.2.y | verified (7.2.2) | same as 7.1. The long-name override becomes mandatory: 7.2 tags the card `spk:tas2783` and stock `alsa-ucm-conf` has no config for it, so without this repo UCM cannot open the card at all |
+| 7.3.y | verified (7.3.0-rc2), builds (7.3.4) | same, plus `90-px13-rt721-no-autosuspend.rules` (the jack codec never resumes from runtime suspend and takes the whole HiFi profile with it — [details](#when-there-is-no-sink-at-all)). From 7.3 on the s2idle recovery defaults to `auto` and a healthy resume costs nothing |
+| **7.4-rc2** | **broken upstream — do not use** | kernel oops while the card is being assembled: no card, udev stalls the boot, shutdown hangs. Happens with the stock driver too, so nothing here can work around it. **Boot 7.3.x or move to 7.4-rc3+.** [Details](#kernel-74-rc2-no-card-and-shutdown-hangs) |
+| 7.4-rc3 | verified (7.4.0-rc3, 2026-11-17: all `check-audio.sh` checks pass) | same as 7.3; the module builds and works **unchanged** |
+
+The DKMS rebuild on a new kernel is automatic (`AUTOINSTALL=yes`), and the
+long-name override, the codec UCM files and the udev rule are unowned files
+that survive package updates. So on a working series the only thing to do after
+an update is `bash check-audio.sh`.
+
+---
+
 ## Kernel updates: what breaks, and how to tell
 
 The DKMS module is a copy of the upstream driver plus one control, so it rides
@@ -169,9 +198,9 @@ about userspace reacting to a half-recovered card:
 | 7.2 | the kernel started tagging the card `spk:tas2783` — while `alsa-ucm-conf` (1.2.16.1) still ships no tas2783 config | on a machine **without** this repo, worse than 7.1: UCM cannot open the card at all instead of silently skipping the Speaker device |
 | (any) | a driver swap under a live WirePlumber | the stored per-route volume can come back at **0%** — sink unmuted, HiFi active, `paplay` exits 0, and nothing comes out |
 | 7.3-rc2 | the `rt721-sdca` jack codec runtime-suspends ~7 s after **any** probe (boot included) and never resumes — `regcache_sync()` gets `-ENODATA`, the peripheral ignores the bus although sysfs says `Attached` | no speaker sink **at all**. The UCM `HiFi` verb has four mappings and the ACP requires every one of them to probe, so the dead `Headphones` mapping drops the whole profile and takes `Speaker` with it — the card is left offering only `off` and `pro-audio`. A reboot does **not** clear it. Fixed by `90-px13-rt721-no-autosuspend.rules` (installed by `install-durable.sh`), which forbids the codec's runtime PM at device-add time so the first suspend never happens |
+| 7.4-rc2 | upstream: a treewide conversion (`4dd10fbbeb9c`) moved the ASoC PCM-runtime allocation to `devm_kzalloc_flex()`; with `__counted_by` and a compiler that has `__builtin_counted_by_ref()` (the clang CachyOS builds with), `rtd->num_components` starts at the allocated size instead of 0 | the link's components are never probed, so the rt721 never gets its `name_prefix`, and `asoc_sdw_rt_sdca_jack_rtd_init()` oopses on `strstr(NULL, …)`: **no card**, and the dead udev worker keeps the ASoC lock, so boot waits on udev and **shutdown hangs**. Not this repo: same oops with the stock driver (`Not tainted`). Fixed in **7.4-rc3** (`d00ba321499c`) — [details](#kernel-74-rc2-no-card-and-shutdown-hangs) |
 | (any) | WirePlumber re-probing a profile its saved state wants but the ACP rejects | a retry loop: ~290 kernel messages/minute, the desktop's sound panel flickering, and the amp's capture port rejected on every attempt. Stopping WirePlumber drops it to 1 message per 20 s |
 | (any) | after any amp probe, `tas2783-N Speaker Volume` reads **153/200** — the scale is 0.5 dB/step from −100 dB, so that is **−23.5 dB**. Who writes it is not pinned down: the driver's regmap paths and `tas2783_init_seq` do not touch `DVC_LVL`, its default is 200, and the firmware download bypasses the regcache | "working but quiet" with every percentage in the UI at 100%. Normally invisible: when WirePlumber manages the card, its route restore **raises** the control back to 200 on profile activation. It only shows when the card is unmanaged (a rejected profile, a static sink) — then nothing raises it. (An earlier revision of this table blamed the route restore for *lowering* it; that was backwards.) |
-
 | (any) | a PipeWire restart (the recovery does one, so did every debugging session here) while a browser is open | Chromium/Brave/Electron keep their audio-service connection and never re-enumerate: playback still works, but WhatsApp Web, Meet & co. say **"microphone not found"** until the browser is restarted (`brave://restart`). Not a PipeWire or driver problem |
 | (any) | the internal DMIC at 100% | speech lands around **−38 dBFS** — the ACP DMIC has no capture gain control and is simply quiet — which voice-activity detectors treat as silence. `install-durable.sh` raises the `Mic` source to 170% (+13.8 dB); a headset in `a2dp-sink` has **no** microphone at all (that is the profile, switch to `headset-head-unit` for its mic) |
 
@@ -201,6 +230,61 @@ One kernel proves nothing about API drift, so it warns when fewer than two are
 available. Both regressions above would have been caught by it: install headers
 for a second series (or extract a distro `kernel-devel` and point
 `PX13_EXTRA_KDIRS` at it) before releasing a module change.
+
+### Kernel 7.4-rc2: no card, and shutdown hangs
+
+Symptoms, all from one cause: `check-audio.sh` fails on the very first check
+(no SoundWire card), the boot sits on `Timed out while waiting for udev queue
+to empty`, and powering off hangs until it is forced. Confirm it in one
+command:
+
+```bash
+journalctl -k -b | grep -E 'BUG:|asoc_sdw_rt_sdca_jack_rtd_init'
+```
+
+A `BUG: kernel NULL pointer dereference` with `RIP: strstr` and
+`asoc_sdw_rt_sdca_jack_rtd_init` in the trace is this bug. `check-audio.sh`
+recognises it and says so instead of the generic "no card".
+
+What happens: the last codec to register (one of the amps) triggers the card
+bind. The bind calls each link's init, and the rt721 jack init passes the
+codec's `name_prefix` to `strstr()`. On 7.4-rc2 that prefix is NULL. The machine
+driver *does* create it (`Adding prefix rt721 for sdw:0:1:025d:0721:01` with
+`snd_acp_sdw_legacy_mach.dyndbg=+p`), but the component is never probed, so it
+is never applied. The cause is `rtd->num_components` being preset by
+`devm_kzalloc_flex()`. The oops kills the udev worker while it holds the ASoC
+lock, which is why the second amp's worker hangs for 3 minutes and why shutdown
+hangs.
+
+It is not the DKMS module: booting 7.4-rc2 with the module removed
+(`sudo dkms remove snd-soc-tas2783-sdw-px13/1.2 -k 7.4.0-rc2-1-cachyos-rc`)
+gives the same oops on an untainted kernel.
+
+Workaround, in order of preference:
+
+1. **Move to 7.4-rc3 or later**, which carries the one-line fix
+   (`d00ba321499c`, "ASoC: soc-core: reset rtd->num_components after
+   allocation"). DKMS rebuilds the module for it automatically; then
+   `bash .gate` and `bash check-audio.sh`. On CachyOS, when the package for
+   your CPU level still lags at rc2, another enabled repo may already carry rc3:
+   `pacman -Si linux-cachyos-rc` lists every repo's version, and
+   `sudo pacman -S <repo>/linux-cachyos-rc <repo>/linux-cachyos-rc-headers`
+   picks one. A later `-Syu` will not downgrade it.
+2. **Boot 7.3.x** from the boot menu until then. The module, UCM files and
+   rules are already installed for it.
+
+There is no in-repo workaround: the bug is in `snd-soc-core`, which runs
+before anything this repo installs gets a say.
+
+If you need more evidence on a kernel like this, the debug messages of the
+modules involved can be turned on without editing the boot entry. They load
+after the initramfs, so a `modprobe.d` file is enough:
+
+```bash
+printf 'options %s dyndbg=+p\n' snd_soc_sdw_utils snd_acp_sdw_legacy_mach snd_soc_core \
+  | sudo tee /etc/modprobe.d/px13-dyndbg.conf      # reboot, then journalctl -k -b
+sudo rm /etc/modprobe.d/px13-dyndbg.conf           # when done
+```
 
 ### When there is no sink at all
 
@@ -361,6 +445,9 @@ If the sides are physically swapped, exchange the two `cset` values in
 
 ## Troubleshooting
 
+- **No card at all, slow boot and a hung shutdown, on 7.4-rc2** — upstream
+  kernel bug, not this repo. Boot 7.3.x or move to 7.4-rc3+. See
+  [Kernel 7.4-rc2](#kernel-74-rc2-no-card-and-shutdown-hangs).
 - **"Dummy output" / no Speaker device** — the long-name override is missing or
   installed under another SKU's name. `bash install-durable.sh` now detects the
   right name and refuses to finish without a Speaker device; if you are fixing

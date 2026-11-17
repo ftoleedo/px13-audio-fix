@@ -18,7 +18,21 @@ warn() { printf '  \033[33mWARN\033[0m  %s\n' "$1"; }
 echo "px13-audio-fix - health check on kernel $(uname -r)"
 echo
 
-CARD="$(px13_find_card)" || { bad "SoundWire card present" "no card in /proc/asound whose driver mentions soundwire"; exit 1; }
+if ! CARD="$(px13_find_card)"; then
+  # 7.4-rc2: the card bind oopses in the rt721 jack init (upstream ASoC bug,
+  # fixed in 7.4-rc3 by d00ba321499c). Nothing in this repo can work around it,
+  # and the dead udev worker is also what makes shutdown hang - so name it.
+  if journalctl -k -b 2>/dev/null | grep -q 'asoc_sdw_rt_sdca_jack_rtd_init'; then
+    bad "SoundWire card present" "the card bind crashed in the kernel (oops in asoc_sdw_rt_sdca_jack_rtd_init).
+           This is the upstream 7.4-rc2 ASoC regression, not this repo: it happens with the
+           stock driver too, and it is also why boot waits on udev and shutdown hangs.
+           Fix: boot 7.3.x, or move to 7.4-rc3 or later (commit d00ba321499c).
+           See README: 'Kernel 7.4-rc2: no card, and shutdown hangs'"
+  else
+    bad "SoundWire card present" "no card in /proc/asound whose driver mentions soundwire"
+  fi
+  exit 1
+fi
 ok "SoundWire card present (card $CARD, $(px13_card_longname "$CARD" || echo '?'))"
 
 # 1. the patched module, not the stock one -----------------------------------
