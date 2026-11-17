@@ -24,3 +24,6 @@ AGENTS.md
 *.exe
 
 __pycache__/
+
+# kernel source copies and logs used for diagnosis (not repo content)
+research/
